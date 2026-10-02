@@ -1,0 +1,6 @@
+{
+  "name": "Stok ve Satış Takip",
+  "description": "Ürün ekleme, stok güncelleme, hızlı satış kaydı ve mobil uyumlu QR kod ile stok düşme özellikli esnaf takip programı.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

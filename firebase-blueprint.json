@@ -1,0 +1,91 @@
+{
+  "collections": {
+    "products": {
+      "description": "Inventory items and fabric rolls for each subscriber",
+      "fields": {
+        "id": "string (custom UUID)",
+        "userId": "string (Firebase Auth UID)",
+        "name": "string",
+        "sku": "string (barcode / unique SKU code)",
+        "category": "string (e.g. Kumaş, Aksesuar)",
+        "price": "number",
+        "stock": "number",
+        "minStock": "number",
+        "attributes": "map of dynamic fields (e.g. Renk, En, RafNo)",
+        "isPackaged": "boolean",
+        "packageUnitsCount": "number (optional)",
+        "packageUnitName": "string (optional)",
+        "subUnitStock": "number (optional)",
+        "rolls": "array of maps containing FabricRoll items { id, rollNumber, length, initialLength, status }"
+      }
+    },
+    "sales": {
+      "description": "Sales logs and transactions per subscriber",
+      "fields": {
+        "id": "string (custom ID)",
+        "userId": "string (Firebase Auth UID)",
+        "items": "array of SaleItem { productId, productName, quantity, price, selectedRollId, cutLength }",
+        "totalAmount": "number",
+        "amountPaid": "number (optional)",
+        "customerId": "string (optional)",
+        "timestamp": "string (ISO Date String)"
+      }
+    },
+    "customers": {
+      "description": "CRM client database and ledgers per subscriber",
+      "fields": {
+        "id": "string (custom ID)",
+        "userId": "string (Firebase Auth UID)",
+        "name": "string",
+        "phone": "string",
+        "instagram": "string",
+        "totalDebt": "number",
+        "totalPaid": "number",
+        "notes": "string",
+        "transactions": "array of CustomerTransaction { id, type, amount, description, timestamp }",
+        "address": "string (optional)",
+        "taxOffice": "string (optional)",
+        "taxNumber": "string (optional)"
+      }
+    },
+    "orders": {
+      "description": "Wholesale orders, ship notes, and waybills per subscriber",
+      "fields": {
+        "id": "string (custom ID)",
+        "userId": "string (Firebase Auth UID)",
+        "orderNo": "string",
+        "customerId": "string (optional)",
+        "customerName": "string",
+        "customerDetails": "map of CustomerDetails { name, address, phone, taxOffice, taxNumber }",
+        "items": "array of OrderItem { productId, productName, quantity, price, rollId, rollNumber, cutLength }",
+        "totalAmount": "number",
+        "amountPaid": "number",
+        "status": "string (Sipariş Alındı / Hazırlanıyor / Sevk Edildi / Teslim Edildi / İptal Edildi)",
+        "orderDate": "string (ISO Date)",
+        "waybillNo": "string (optional)",
+        "waybillDate": "string (optional)",
+        "shipDate": "string (optional)",
+        "notes": "string (optional)"
+      }
+    },
+    "settings": {
+      "description": "Sectored settings doc named with the user's UID",
+      "fields": {
+        "activeSector": "string",
+        "customFields": "array of SectorField { key, label, type, required }"
+      }
+    },
+    "company": {
+      "description": "Company registration and invoice details doc named with the user's UID",
+      "fields": {
+        "name": "string",
+        "address": "string",
+        "phone": "string",
+        "email": "string",
+        "taxOffice": "string",
+        "taxNumber": "string",
+        "logo": "string (base64 data URL)"
+      }
+    }
+  }
+}
