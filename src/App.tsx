@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   LayoutDashboard,
@@ -16,9 +16,14 @@ import {
   Users,
   Sliders,
   FileText,
-  LogOut
+  LogOut,
+  Zap,
+  Clock,
+  Crown,
+  CreditCard,
+  ShieldAlert
 } from "lucide-react";
-import { Product, Sale } from "./types";
+import { Product, Sale, SubscriptionEntitlement, TenantContext } from "./types";
 import { Dashboard } from "./components/Dashboard";
 import { Inventory } from "./components/Inventory";
 import { QuickSale } from "./components/QuickSale";
@@ -27,17 +32,23 @@ import { History } from "./components/History";
 import { Crm } from "./components/Crm";
 import { Settings } from "./components/Settings";
 import { OrdersWaybills } from "./components/OrdersWaybills";
+import { SubscriptionModal } from "./components/SubscriptionModal";
 import { auth } from "./lib/firebase";
+import { assertAuthenticated, isDemoAllowed } from "./lib/authGuard";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { 
   getProducts, 
   addProduct, 
   updateProduct, 
   deleteProduct, 
+  restoreProduct,
   getSales, 
   addSale,
   getCustomers,
-  updateCustomer
+  updateCustomer,
+  processSaleTransaction,
+  getTenantEntitlement,
+  getOrCreateTenantContext
 } from "./lib/firestoreService";
 import { Auth } from "./components/Auth";
 
@@ -48,6 +59,12 @@ export default function App() {
   // Auth State
   const [user, setUser] = useState<any>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+
+  // SaaS Subscription & Entitlement State
+  const [entitlement, setEntitlement] = useState<SubscriptionEntitlement | null>(null);
+  const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
+  const [blockReason, setBlockReason] = useState<string | undefined>(undefined);
+  const [tenantContext, setTenantContext] = useState<TenantContext | null>(null);
 
   // Core backend state
   const [products, setProducts] = useState<Product[]>([]);
@@ -84,205 +101,137 @@ export default function App() {
   const [scanSuccessMsg, setScanSuccessMsg] = useState("");
   const [scanErrorMsg, setScanErrorMsg] = useState("");
 
-  const fetchDataForUser = async (uid: string) => {
+  const fetchDataForUser = async (uid: string, showLoader = false) => {
     try {
-      setIsLoading(true);
-      const [productsRes, salesRes] = await Promise.all([
-        getProducts(uid),
-        getSales(uid)
+      assertAuthenticated(uid, "App.fetchDataForUser");
+      if (showLoader) setIsLoading(true);
+      const [productsRes, salesRes, entitlementRes, contextRes] = await Promise.all([
+        getProducts(uid, true),
+        getSales(uid),
+        getTenantEntitlement(uid),
+        getOrCreateTenantContext(uid)
       ]);
       setProducts(productsRes);
       setSales(salesRes);
+      setEntitlement(entitlementRes);
+      setTenantContext(contextRes);
     } catch (err) {
       console.error("Error loading server data:", err);
     } finally {
-      setIsLoading(false);
+      if (showLoader) setIsLoading(false);
     }
   };
 
-  const fetchData = async () => {
+  const handleRefreshEntitlement = async () => {
     const uid = user?.uid || auth.currentUser?.uid;
     if (uid) {
-      await fetchDataForUser(uid);
+      const ent = await getTenantEntitlement(uid);
+      setEntitlement(ent);
     }
   };
+
+  const fetchData = async (showLoader = false) => {
+    const uid = user?.uid || auth.currentUser?.uid;
+    if (uid) {
+      await fetchDataForUser(uid, showLoader);
+    }
+  };
+
+  // Active products for checkout and order picking (hides soft-deleted items)
+  const activeProducts = useMemo(() => products.filter((p) => p.isActive !== false), [products]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
-        fetchDataForUser(currentUser.uid);
+        fetchDataForUser(currentUser.uid, true);
       } else {
-        setUser((prev: any) => (prev && prev.uid === "demo-user" ? prev : null));
+        setUser((prev: any) => (isDemoAllowed() && prev && prev.uid === "demo-user" ? prev : null));
       }
       setIsAuthLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
-  // Product mutations
+  // Product mutations with Optimistic UI updates
   const handleAddProduct = async (newProduct: Omit<Product, "id">) => {
     const uid = user?.uid || auth.currentUser?.uid;
     if (!uid) throw new Error("Oturum açık değil.");
+
+    if (entitlement && !entitlement.hasAccess) {
+      setBlockReason(entitlement.reason || "Abonelik süreniz sona ermiştir. Yeni ürün eklemek için lütfen bir plan seçin.");
+      setShowSubscriptionModal(true);
+      throw new Error(entitlement.reason || "Abonelik süreniz sona ermiştir.");
+    }
+
+    if (entitlement && !entitlement.canAddProduct) {
+      setBlockReason(entitlement.reason || "Mevcut planınızın ürün kotası dolmuştur. Lütfen paketinizi yükseltin.");
+      setShowSubscriptionModal(true);
+      throw new Error(entitlement.reason || "Ürün ekleme kotası dolmuştur.");
+    }
+
     await addProduct(uid, newProduct);
-    await fetchData();
+    await fetchData(false);
+    await handleRefreshEntitlement();
   };
 
   const handleUpdateProduct = async (id: string, updates: Partial<Product>) => {
-    await updateProduct(id, updates);
-    await fetchData();
+    // 0ms Optimistic UI update
+    setProducts((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+    try {
+      await updateProduct(id, updates);
+    } catch (err) {
+      console.error("Failed to update product:", err);
+      await fetchData(false);
+      throw err;
+    }
   };
 
   const handleDeleteProduct = async (id: string) => {
-    await deleteProduct(id);
-    await fetchData();
+    // 0ms Optimistic soft delete
+    setProducts((prev) => prev.map((p) => (p.id === id ? { ...p, isActive: false, deletedAt: new Date().toISOString() } : p)));
+    try {
+      await deleteProduct(id);
+    } catch (err) {
+      console.error("Failed to delete product:", err);
+      await fetchData(false);
+      throw err;
+    }
   };
 
-  // Sales mutation
+  const handleRestoreProduct = async (id: string) => {
+    // 0ms Optimistic restore
+    setProducts((prev) => prev.map((p) => (p.id === id ? { ...p, isActive: true, deletedAt: undefined } : p)));
+    try {
+      await restoreProduct(id);
+    } catch (err) {
+      console.error("Failed to restore product:", err);
+      await fetchData(false);
+      throw err;
+    }
+  };
+
+  // Sales mutation (ACID Atomic Transaction)
   const handleRecordSale = async (
     items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number }[],
     customerId?: string,
-    amountPaid?: number
-  ) => {
+    amountPaid?: number,
+    idempotencyKey?: string,
+    paymentMethod?: string
+  ): Promise<void> => {
     const uid = user?.uid || auth.currentUser?.uid;
     if (!uid) throw new Error("Oturum açık değil.");
 
-    const saleItems: any[] = [];
-    let totalAmount = 0;
+    // Execute atomic transaction for stock, rolls, sale record, customer ledger and payment
+    await processSaleTransaction(uid, {
+      items,
+      customerId,
+      amountPaid,
+      idempotencyKey,
+      paymentMethod
+    });
 
-    // 1. Check stock and prepare sale items
-    for (const item of items) {
-      const product = products.find((p) => p.id === item.productId);
-      if (!product) throw new Error(`Ürün bulunamadı: ID ${item.productId}`);
-
-      const qty = Number(item.quantity);
-      const rollId = item.selectedRollId;
-      const cutLen = item.cutLength !== undefined ? Number(item.cutLength) : undefined;
-      const qtyToDeduct = cutLen !== undefined ? cutLen : qty;
-
-      if (rollId && product.rolls) {
-        const roll = product.rolls.find((r) => r.id === rollId);
-        if (!roll) throw new Error(`Kumaş topu bulunamadı: ID ${rollId}`);
-        if (roll.length < qtyToDeduct) {
-          throw new Error(`Seçilen kumaş topunda (${roll.rollNumber}) yeterli miktar yok! Kalan: ${roll.length}m`);
-        }
-      } else {
-        if (product.stock < qtyToDeduct) {
-          throw new Error(`Yetersiz stok! ${product.name} için kalan: ${product.stock}m`);
-        }
-      }
-
-      saleItems.push({
-        productId: product.id,
-        productName: product.name,
-        name: product.name,
-        quantity: qty,
-        price: product.price,
-        selectedRollId: rollId,
-        selectedRollNumber: rollId && product.rolls ? product.rolls.find((r) => r.id === rollId)?.rollNumber : undefined,
-        cutLength: cutLen
-      });
-      totalAmount += product.price * qty;
-    }
-
-    // 2. Deduct stock and save product updates
-    for (const item of saleItems) {
-      const product = products.find((p) => p.id === item.productId)!;
-      const qtyToDeduct = item.cutLength !== undefined ? item.cutLength : item.quantity;
-
-      let newStock = product.stock;
-      let newRolls = product.rolls ? [...product.rolls] : undefined;
-
-      if (item.selectedRollId && newRolls) {
-        newRolls = newRolls.map((r) => {
-          if (r.id === item.selectedRollId) {
-            const updatedLen = Math.max(0, r.length - qtyToDeduct);
-            return {
-              ...r,
-              length: updatedLen,
-              status: updatedLen <= 0 ? ("sold" as const) : r.status
-            };
-          }
-          return r;
-        });
-        newStock = newRolls.reduce((sum, r) => sum + r.length, 0);
-      } else {
-        newStock = Math.max(0, product.stock - qtyToDeduct);
-        if (newRolls && newRolls.length > 0) {
-          let remaining = qtyToDeduct;
-          newRolls = newRolls.map((r) => {
-            if (r.status === "available" && r.length > 0 && remaining > 0) {
-              const dec = Math.min(r.length, remaining);
-              remaining -= dec;
-              const updatedLen = Math.max(0, r.length - dec);
-              return {
-                ...r,
-                length: updatedLen,
-                status: updatedLen <= 0 ? ("sold" as const) : r.status
-              };
-            }
-            return r;
-          });
-          newStock = newRolls.reduce((sum, r) => sum + r.length, 0);
-        }
-      }
-
-      await updateProduct(product.id, {
-        stock: newStock,
-        rolls: newRolls
-      });
-    }
-
-    // 3. Record sale in history
-    const saleId = "S" + Math.random().toString(36).substring(2, 8).toUpperCase();
-    const newSale = {
-      items: saleItems,
-      totalAmount,
-      timestamp: new Date().toISOString()
-    };
-
-    const addedSale = await addSale(uid, newSale);
-
-    // 4. Customer ledger link
-    if (customerId) {
-      const allCustomers = await getCustomers(uid);
-      const customer = allCustomers.find((c) => c.id === customerId);
-      if (customer) {
-        const transactions = [...(customer.transactions || [])];
-        let totalDebt = customer.totalDebt || 0;
-        let totalPaid = customer.totalPaid || 0;
-
-        transactions.unshift({
-          id: "T_P_" + addedSale.id,
-          type: "sale",
-          amount: totalAmount,
-          description: `Satış Alımı (Fiş: #${addedSale.id})`,
-          timestamp: new Date().toISOString()
-        });
-        totalDebt += totalAmount;
-
-        const paid = Number(amountPaid || 0);
-        if (paid > 0) {
-          transactions.unshift({
-            id: "T_P_PAY_" + addedSale.id,
-            type: "payment",
-            amount: paid,
-            description: `Satış Ödemesi (Fiş: #${addedSale.id})`,
-            timestamp: new Date().toISOString()
-          });
-          totalDebt = Math.max(0, totalDebt - paid);
-          totalPaid += paid;
-        }
-
-        await updateCustomer(customerId, {
-          totalDebt,
-          totalPaid,
-          transactions
-        });
-      }
-    }
-
-    await fetchData();
+    await fetchData(false);
   };
 
   const handleSignOut = async () => {
@@ -306,9 +255,9 @@ export default function App() {
   const handleScanSuccess = (decodedText: string) => {
     setScanSuccessMsg("");
     setScanErrorMsg("");
-    // Find matching product either by exact id or sku barcode
+    // Find matching product either by manufacturer barcode, merchant sku or technical id
     const matched = products.find(
-      (p) => p.sku === decodedText || p.id === decodedText
+      (p) => p.sku === decodedText || p.id === decodedText || (p.barcode && p.barcode === decodedText)
     );
 
     if (matched) {
@@ -324,7 +273,8 @@ export default function App() {
   const handleScanSaleSubmit = async () => {
     if (!scannedProduct) return;
     try {
-      await handleRecordSale([{ productId: scannedProduct.id, quantity: scanQty }]);
+      const scanKey = `scan_${Date.now()}_${crypto.randomUUID().replace(/-/g, "").substring(0, 12)}`;
+      await handleRecordSale([{ productId: scannedProduct.id, quantity: scanQty }], undefined, undefined, scanKey);
       setScanSuccessMsg(`Başarıyla satıldı: ${scanQty}x ${scannedProduct.name}`);
       setScannedProduct(null);
       setTimeout(() => setScanSuccessMsg(""), 4000);
@@ -419,6 +369,37 @@ export default function App() {
           })}
         </nav>
 
+        {/* SaaS Subscription & Plan Badge */}
+        <div className="mx-4 mb-3 p-3.5 rounded-xl bg-slate-800/90 border border-slate-700/80 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Abonelik</span>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+              entitlement?.isTrial 
+                ? "bg-amber-500/20 text-amber-300 border border-amber-400/30" 
+                : entitlement?.hasAccess 
+                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-400/30" 
+                : "bg-rose-500/20 text-rose-300 border border-rose-400/30"
+            }`}>
+              {entitlement?.isTrial 
+                ? `${entitlement.trialDaysLeft}G Deneme` 
+                : entitlement?.hasAccess 
+                ? "Aktif" 
+                : "Sona Erdi"}
+            </span>
+          </div>
+          <span className="font-bold text-xs text-white block mt-1.5 truncate">
+            {entitlement?.plan?.name || "Pro Plan"}
+          </span>
+          <button
+            type="button"
+            onClick={() => { setBlockReason(undefined); setShowSubscriptionModal(true); }}
+            className="w-full mt-2.5 py-1.5 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-98"
+          >
+            <Zap className="w-3.5 h-3.5 text-indigo-200" />
+            <span>Planları Yönet</span>
+          </button>
+        </div>
+
         {/* User Card */}
         <div className="p-4 border-t border-slate-700">
           <div className="flex items-center gap-3 bg-slate-800/30 p-3 rounded-xl border border-slate-800/20">
@@ -451,6 +432,14 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { setBlockReason(undefined); setShowSubscriptionModal(true); }}
+              className="px-2.5 py-1 bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer"
+            >
+              <Zap className="w-3.5 h-3.5 text-indigo-400" />
+              <span>{entitlement?.isTrial ? `${entitlement.trialDaysLeft}G` : entitlement?.plan?.name || "Plan"}</span>
+            </button>
             <button
               onClick={handleSignOut}
               className="p-2 text-rose-400 hover:text-rose-300"
@@ -504,6 +493,23 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        {/* Trial Expired / Subscription Inactive Global Warning */}
+        {entitlement && !entitlement.hasAccess && (
+          <div className="bg-rose-600 text-white p-3 px-6 flex items-center justify-between text-xs font-bold shadow-md z-10 animate-fade-in">
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 flex-shrink-0" />
+              <span>{entitlement.reason || "Aboneliğiniz veya deneme süreniz sona ermiştir. İşlemlere devam etmek için lütfen planınızı seçin."}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setBlockReason(entitlement.reason); setShowSubscriptionModal(true); }}
+              className="px-3 py-1 bg-white text-rose-700 hover:bg-rose-50 rounded-lg text-xs font-black shadow-sm transition-all cursor-pointer flex-shrink-0 ml-4"
+            >
+              Hemen Plan Seç
+            </button>
+          </div>
+        )}
+
         {/* Inner Content Scroller */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 pb-20 md:pb-8">
           {isLoading ? (
@@ -523,7 +529,7 @@ export default function App() {
               >
                 {activeTab === "dashboard" && (
                   <Dashboard
-                    products={products}
+                    products={activeProducts}
                     sales={sales}
                     onQuickReplenish={handleQuickReplenish}
                     onNavigateToTab={(tab) => {
@@ -541,16 +547,17 @@ export default function App() {
                     onAddProduct={handleAddProduct}
                     onUpdateProduct={handleUpdateProduct}
                     onDeleteProduct={handleDeleteProduct}
+                    onRestoreProduct={handleRestoreProduct}
                     onRefreshData={fetchData}
                     initialFilter={inventoryFilter}
                     onClearInitialFilter={() => setInventoryFilter(null)}
                   />
                 )}
                 {activeTab === "orders" && (
-                  <OrdersWaybills products={products} onRefreshProducts={fetchData} />
+                  <OrdersWaybills products={activeProducts} onRefreshProducts={fetchData} />
                 )}
                 {activeTab === "sale" && (
-                  <QuickSale products={products} onRecordSale={handleRecordSale} />
+                  <QuickSale products={activeProducts} onRecordSale={handleRecordSale} />
                 )}
                 {activeTab === "crm" && (
                   <Crm onRefreshData={fetchData} />
@@ -583,7 +590,12 @@ export default function App() {
                 )}
                 {activeTab === "history" && <History sales={sales} products={products} />}
                 {activeTab === "settings" && (
-                  <Settings onRefreshSectorSettings={fetchData} />
+                  <Settings 
+                    onRefreshSectorSettings={fetchData} 
+                    onOpenSubscriptionModal={() => { setBlockReason(undefined); setShowSubscriptionModal(true); }}
+                    companyName={tenantContext?.companyName}
+                    tenantId={tenantContext?.tenantId}
+                  />
                 )}
               </motion.div>
             </AnimatePresence>
@@ -708,6 +720,19 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* 5. SaaS Subscription & Plan Selection Modal */}
+      <SubscriptionModal
+        isOpen={showSubscriptionModal}
+        onClose={() => {
+          setShowSubscriptionModal(false);
+          setBlockReason(undefined);
+        }}
+        tenantId={tenantContext?.tenantId || user?.uid || "demo-tenant"}
+        entitlement={entitlement}
+        onRefreshEntitlement={handleRefreshEntitlement}
+        blockReason={blockReason}
+      />
     </div>
   );
 }

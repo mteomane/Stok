@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { 
   Users, 
   Phone, 
@@ -15,11 +15,14 @@ import {
   Send,
   UserCheck,
   TrendingDown,
-  X
+  X,
+  Download
 } from "lucide-react";
 import { Customer } from "../types";
 import { auth } from "../lib/firebase";
-import { getCustomers, addCustomer, updateCustomer, deleteCustomer } from "../lib/firestoreService";
+import { getCustomers, addCustomer, updateCustomer, deleteCustomer, processCustomerPayment } from "../lib/firestoreService";
+import { exportService } from "../lib/export/ExportService";
+import { triggerFileDownload } from "../lib/export/fileDownload";
 
 interface CrmProps {
   onRefreshData?: () => void;
@@ -28,9 +31,26 @@ interface CrmProps {
 export function Crm({ onRefreshData }: CrmProps) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [isExporting, setIsExporting] = useState(false);
+
+  // Debounce search query
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Reset pagination on search / page size change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearch, pageSize]);
 
   // Modals / forms state
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -46,10 +66,14 @@ export function Crm({ onRefreshData }: CrmProps) {
     notes: ""
   });
 
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [paymentIdempotencyKey, setPaymentIdempotencyKey] = useState<string | null>(null);
+
   const [paymentForm, setPaymentForm] = useState({
     type: "payment" as "payment" | "sale",
     amount: "",
-    description: ""
+    description: "",
+    paymentMethod: "nakit" as "nakit" | "kredi_karti" | "havale" | "cek" | "diger"
   });
 
   const fetchCustomers = async () => {
@@ -156,69 +180,100 @@ export function Crm({ onRefreshData }: CrmProps) {
     setPaymentForm({
       type: initialType,
       amount: "",
-      description: initialType === "payment" ? "Tahsilat Alındı" : "Veresiye / Borç Kaydı"
+      description: initialType === "payment" ? "Tahsilat Alındı" : "Veresiye / Borç Kaydı",
+      paymentMethod: "nakit"
     });
+    // Generate fresh idempotency key per modal session to prevent duplicate network submissions
+    const newKey = "crm_pay_" + Date.now().toString(36) + "_" + Math.random().toString(36).substring(2, 9);
+    setPaymentIdempotencyKey(newKey);
     setIsPaymentModalOpen(true);
   };
 
   const handlePaymentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     if (!selectedCustomer || !paymentForm.amount) return;
 
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      setError("Oturum açık değil.");
+      setTimeout(() => setError(""), 4000);
+      return;
+    }
+
     try {
+      setIsSubmitting(true);
+      setError("");
+
       const val = Number(paymentForm.amount);
       if (isNaN(val) || val <= 0) {
         throw new Error("Geçersiz işlem miktarı.");
       }
 
-      const transId = "T" + Math.random().toString(36).substring(2, 8).toUpperCase();
-      const newTransaction = {
-        id: transId,
-        type: paymentForm.type,
-        amount: val,
-        description: paymentForm.description.trim() || (paymentForm.type === "payment" ? "Tahsilat Ödemesi" : "Borç Kaydı"),
-        timestamp: new Date().toISOString()
-      };
-
-      const updatedTransactions = [newTransaction, ...(selectedCustomer.transactions || [])];
-      let newDebt = selectedCustomer.totalDebt || 0;
-      let newPaid = selectedCustomer.totalPaid || 0;
-
       if (paymentForm.type === "payment") {
-        newDebt = Math.max(0, newDebt - val);
-        newPaid += val;
-      } else {
-        newDebt += val;
+        const debt = Number(selectedCustomer.totalDebt || 0);
+        if (debt <= 0) {
+          throw new Error("Müşterinin ödenmemiş borcu bulunmamaktadır.");
+        }
+        if (val > debt) {
+          throw new Error(`Tahsilat tutarı (${val.toFixed(2)} TL) mevcut borçtan (${debt.toFixed(2)} TL) fazla olamaz.`);
+        }
       }
 
-      await updateCustomer(selectedCustomer.id, {
-        totalDebt: newDebt,
-        totalPaid: newPaid,
-        transactions: updatedTransactions
+      const activeKey = paymentIdempotencyKey || ("crm_pay_" + Date.now().toString(36) + "_" + Math.random().toString(36).substring(2, 9));
+
+      const result = await processCustomerPayment(uid, {
+        customerId: selectedCustomer.id,
+        amount: val,
+        type: paymentForm.type,
+        description: paymentForm.description.trim() || (paymentForm.type === "payment" ? "Tahsilat Ödemesi" : "Borç Kaydı"),
+        paymentMethod: paymentForm.paymentMethod,
+        idempotencyKey: activeKey
       });
 
-      await fetchCustomers();
-      setSuccess("Ödeme / işlem kaydı başarıyla eklendi.");
+      if (result.isDuplicate) {
+        setSuccess("Bu işlem daha önce kaydedilmişti (Mükerrer istek koruması devrede).");
+      } else {
+        setSuccess(paymentForm.type === "payment" ? "Tahsilat ödemesi başarıyla kaydedildi." : "Borç kaydı başarıyla eklendi.");
+      }
+
       setIsPaymentModalOpen(false);
       setSelectedCustomer(null);
-      setPaymentForm({ type: "payment", amount: "", description: "" });
+      setPaymentForm({ type: "payment", amount: "", description: "", paymentMethod: "nakit" });
+      setPaymentIdempotencyKey(null);
+      await fetchCustomers();
       if (onRefreshData) onRefreshData();
       setTimeout(() => setSuccess(""), 3000);
     } catch (err: any) {
       setError(err.message || "İşlem kaydedilirken hata oluştu.");
       setTimeout(() => setError(""), 4000);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const filteredCustomers = customers.filter(c => 
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (c.phone && c.phone.includes(searchQuery)) ||
-    (c.instagram && c.instagram.toLowerCase().includes(searchQuery.toLowerCase()))
-  );
+  const filteredCustomers = useMemo(() => {
+    const q = debouncedSearch.toLowerCase().trim();
+    if (!q) return customers;
+    return customers.filter(c => 
+      c.name.toLowerCase().includes(q) ||
+      (c.phone && c.phone.includes(q)) ||
+      (c.instagram && c.instagram.toLowerCase().includes(q))
+    );
+  }, [customers, debouncedSearch]);
 
-  const totalReceivables = customers.reduce((sum, c) => sum + c.totalDebt, 0);
-  const totalPaid = customers.reduce((sum, c) => sum + c.totalPaid, 0);
-  const debtorCount = customers.filter(c => c.totalDebt > 0).length;
+  const { totalReceivables, totalPaid, debtorCount } = useMemo(() => {
+    const totalReceivables = customers.reduce((sum, c) => sum + c.totalDebt, 0);
+    const totalPaid = customers.reduce((sum, c) => sum + c.totalPaid, 0);
+    const debtorCount = customers.filter(c => c.totalDebt > 0).length;
+    return { totalReceivables, totalPaid, debtorCount };
+  }, [customers]);
+
+  const totalPages = Math.ceil(filteredCustomers.length / pageSize) || 1;
+  const paginatedCustomers = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredCustomers.slice(start, start + pageSize);
+  }, [filteredCustomers, currentPage, pageSize]);
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(val);
@@ -235,16 +290,40 @@ export function Crm({ onRefreshData }: CrmProps) {
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">Müşteri hesap bakiyeleri, veresiye borç takipleri ve doğrudan Whatsapp/Instagram iletişimi.</p>
         </div>
-        <button
-          onClick={() => {
-            setCustomerForm({ name: "", phone: "", instagram: "", notes: "" });
-            setIsAddModalOpen(true);
-          }}
-          className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm rounded-lg flex items-center gap-2 transition-all shadow-sm active:scale-95"
-        >
-          <Plus className="w-4 h-4" />
-          Müşteri Ekle
-        </button>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <button
+            type="button"
+            disabled={isExporting}
+            onClick={async () => {
+              try {
+                setIsExporting(true);
+                const uid = auth.currentUser?.uid || "demo-user";
+                const result = await exportService.exportCustomers(uid, "csv");
+                triggerFileDownload(result.content, result.fileName, result.mimeType);
+              } catch (err: any) {
+                alert(err.message || "Dışa aktarma sırasında hata oluştu.");
+              } finally {
+                setIsExporting(false);
+              }
+            }}
+            className="flex-1 sm:flex-none px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-lg flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 active:scale-95"
+            title="Müşteri ve veresiye bakiyelerini Excel uyumlu CSV olarak indir"
+          >
+            <Download className="w-4 h-4 text-emerald-600" />
+            <span>{isExporting ? "İndiriliyor..." : "Excel/CSV İndir"}</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setCustomerForm({ name: "", phone: "", instagram: "", notes: "" });
+              setIsAddModalOpen(true);
+            }}
+            className="flex-1 sm:flex-none px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs sm:text-sm rounded-lg flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            Müşteri Ekle
+          </button>
+        </div>
       </div>
 
       {/* Stats row */}
@@ -330,7 +409,7 @@ export function Crm({ onRefreshData }: CrmProps) {
           </div>
         ) : (
           <div className="divide-y divide-slate-100 overflow-x-auto">
-            {filteredCustomers.map((customer) => {
+            {paginatedCustomers.map((customer) => {
               const hasDebt = customer.totalDebt > 0;
               const waText = `Merhaba ${customer.name}, Güncel hesap bakiye durumunuza göre ${formatCurrency(customer.totalDebt)} borç bakiyeniz bulunmaktadır. Ödemeyi gerçekleştirebilirseniz seviniriz. İyi çalışmalar dileriz.`;
               const waLink = customer.phone 
@@ -488,6 +567,49 @@ export function Crm({ onRefreshData }: CrmProps) {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Pagination Controls */}
+        {filteredCustomers.length > 0 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 border-t border-slate-100 bg-slate-50/50">
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span>Sayfa Başına:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold text-slate-700 focus:outline-none"
+              >
+                <option value={10}>10 Müşteri</option>
+                <option value={20}>20 Müşteri</option>
+                <option value={50}>50 Müşteri</option>
+              </select>
+              <span className="ml-2">
+                Toplam <strong>{filteredCustomers.length}</strong> müşteriden <strong>{Math.min(filteredCustomers.length, (currentPage - 1) * pageSize + 1)}-{Math.min(filteredCustomers.length, currentPage * pageSize)}</strong> arası
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer shadow-xs"
+              >
+                Önceki
+              </button>
+              <span className="text-xs font-bold text-slate-700 px-2">
+                {currentPage} / {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages}
+                className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer shadow-xs"
+              >
+                Sonraki
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -651,7 +773,13 @@ export function Crm({ onRefreshData }: CrmProps) {
               <h3 className="font-bold text-slate-800 text-sm sm:text-base">
                 {paymentForm.type === "payment" ? "Tahsilat Ödemesi Gir" : "Manuel Borçlandır"}
               </h3>
-              <button onClick={() => setIsPaymentModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+              <button 
+                onClick={() => !isSubmitting && setIsPaymentModalOpen(false)} 
+                disabled={isSubmitting} 
+                className="text-slate-400 hover:text-slate-600 disabled:opacity-40"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 mb-4 text-xs">
@@ -665,47 +793,96 @@ export function Crm({ onRefreshData }: CrmProps) {
 
             <form onSubmit={handlePaymentSubmit} className="space-y-4">
               <div>
-                <label className="text-xs font-bold text-slate-500 block mb-1">Miktar (TL) *</label>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-xs font-bold text-slate-500">Miktar (TL) *</label>
+                  {paymentForm.type === "payment" && selectedCustomer.totalDebt > 0 && (
+                    <button
+                      type="button"
+                      disabled={isSubmitting}
+                      onClick={() => setPaymentForm({ ...paymentForm, amount: selectedCustomer.totalDebt.toString() })}
+                      className="text-[11px] text-indigo-600 hover:text-indigo-700 font-semibold transition-colors disabled:opacity-50"
+                    >
+                      Tüm Borcu Kapat ({formatCurrency(selectedCustomer.totalDebt)})
+                    </button>
+                  )}
+                </div>
                 <input
                   type="number"
                   required
                   min="0.01"
+                  max={paymentForm.type === "payment" ? Math.max(0.01, selectedCustomer.totalDebt) : undefined}
                   step="0.01"
+                  disabled={isSubmitting}
                   value={paymentForm.amount}
                   onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })}
                   placeholder="0.00"
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
                 />
+                {paymentForm.type === "payment" && Number(paymentForm.amount) > selectedCustomer.totalDebt && (
+                  <p className="text-[11px] text-rose-500 font-medium mt-1">
+                    Tahsilat tutarı mevcut borçtan ({formatCurrency(selectedCustomer.totalDebt)}) fazla olamaz.
+                  </p>
+                )}
               </div>
+
+              {paymentForm.type === "payment" && (
+                <div>
+                  <label className="text-xs font-bold text-slate-500 block mb-1">Ödeme Yöntemi</label>
+                  <select
+                    value={paymentForm.paymentMethod}
+                    onChange={(e) => setPaymentForm({ ...paymentForm, paymentMethod: e.target.value as any })}
+                    disabled={isSubmitting}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
+                  >
+                    <option value="nakit">Nakit</option>
+                    <option value="kredi_karti">Kredi Kartı</option>
+                    <option value="havale">Havale / EFT</option>
+                    <option value="cek">Çek</option>
+                    <option value="diger">Diğer</option>
+                  </select>
+                </div>
+              )}
 
               <div>
                 <label className="text-xs font-bold text-slate-500 block mb-1">İşlem Açıklaması</label>
                 <input
                   type="text"
+                  disabled={isSubmitting}
                   value={paymentForm.description}
                   onChange={(e) => setPaymentForm({ ...paymentForm, description: e.target.value })}
                   placeholder={paymentForm.type === "payment" ? "Tahsilat Alındı" : "Veresiye / Borç Kaydı"}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
                 />
               </div>
 
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => setIsPaymentModalOpen(false)}
-                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold text-sm rounded-lg transition-colors"
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold text-sm rounded-lg transition-colors disabled:opacity-60"
                 >
                   İptal
                 </button>
                 <button
                   type="submit"
-                  className={`flex-1 py-2.5 text-white font-semibold text-sm rounded-lg transition-colors shadow-sm ${
+                  disabled={isSubmitting}
+                  className={`flex-1 py-2.5 text-white font-semibold text-sm rounded-lg transition-colors shadow-sm flex items-center justify-center gap-2 ${
+                    isSubmitting ? "opacity-60 cursor-not-allowed " : ""
+                  }${
                     paymentForm.type === "payment"
                       ? "bg-emerald-600 hover:bg-emerald-700"
                       : "bg-rose-500 hover:bg-rose-600"
                   }`}
                 >
-                  {paymentForm.type === "payment" ? "Ödeme Al ve Kaydet" : "Borçlandır ve Kaydet"}
+                  {isSubmitting ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>İşleniyor...</span>
+                    </>
+                  ) : (
+                    paymentForm.type === "payment" ? "Ödeme Al ve Kaydet" : "Borçlandır ve Kaydet"
+                  )}
                 </button>
               </div>
             </form>

@@ -5,6 +5,9 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    define: {
+      __ALLOW_TEST_AUTH_OVERRIDE__: JSON.stringify(false),
+    },
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {

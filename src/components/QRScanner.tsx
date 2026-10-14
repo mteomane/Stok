@@ -10,6 +10,8 @@ export function QRScanner({ onScanSuccess }: QRScannerProps) {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [manualCode, setManualCode] = useState("");
   const scannerRef = useRef<Html5Qrcode | null>(null);
+  const lastScanTimeRef = useRef<number>(0);
+  const lastScannedTextRef = useRef<string>("");
   const elementId = "qr-reader-container";
 
   useEffect(() => {
@@ -35,6 +37,13 @@ export function QRScanner({ onScanSuccess }: QRScannerProps) {
           },
           (decodedText) => {
             if (isMounted) {
+              const now = Date.now();
+              // Throttle duplicate scan events to avoid spamming UI state updates
+              if (now - lastScanTimeRef.current < 1500 && lastScannedTextRef.current === decodedText) {
+                return;
+              }
+              lastScanTimeRef.current = now;
+              lastScannedTextRef.current = decodedText;
               onScanSuccess(decodedText);
             }
           },

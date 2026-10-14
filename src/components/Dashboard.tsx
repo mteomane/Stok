@@ -1,3 +1,4 @@
+import React, { useMemo } from "react";
 import { Product, Sale } from "../types";
 import { 
   TrendingUp, 
@@ -27,21 +28,42 @@ export function Dashboard({
   onNavigateToTab,
   onNavigateToLowStock 
 }: DashboardProps) {
-  // Calculate stats
-  const totalSalesCiro = sales.reduce((sum, s) => sum + s.totalAmount, 0);
-  const totalProductsCount = products.length;
-  const totalStockQuantity = products.reduce((sum, p) => sum + p.stock, 0);
-  const lowStockProducts = products.filter((p) => p.stock <= p.minStock);
-  const outOfStockCount = lowStockProducts.filter((p) => p.stock <= 0).length;
-  const criticalDeficit = lowStockProducts.reduce((sum, p) => sum + Math.max(0, p.minStock - p.stock), 0);
-  const stockHealthRate = totalProductsCount > 0 
-    ? Math.round(((totalProductsCount - lowStockProducts.length) / totalProductsCount) * 100) 
-    : 100;
+  // Memoized stats calculation for responsive dashboard
+  const {
+    totalSalesCiro,
+    totalProductsCount,
+    totalStockQuantity,
+    lowStockProducts,
+    outOfStockCount,
+    criticalDeficit,
+    stockHealthRate,
+    recentSales
+  } = useMemo(() => {
+    const totalSalesCiro = sales.reduce((sum, s) => sum + s.totalAmount, 0);
+    const totalProductsCount = products.length;
+    const totalStockQuantity = products.reduce((sum, p) => sum + p.stock, 0);
+    const lowStockProducts = products.filter((p) => p.stock <= p.minStock);
+    const outOfStockCount = lowStockProducts.filter((p) => p.stock <= 0).length;
+    const criticalDeficit = lowStockProducts.reduce((sum, p) => sum + Math.max(0, p.minStock - p.stock), 0);
+    const stockHealthRate = totalProductsCount > 0 
+      ? Math.round(((totalProductsCount - lowStockProducts.length) / totalProductsCount) * 100) 
+      : 100;
 
-  // Get last 5 sales
-  const recentSales = [...sales]
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-    .slice(0, 5);
+    const recentSales = [...sales]
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, 5);
+
+    return {
+      totalSalesCiro,
+      totalProductsCount,
+      totalStockQuantity,
+      lowStockProducts,
+      outOfStockCount,
+      criticalDeficit,
+      stockHealthRate,
+      recentSales
+    };
+  }, [products, sales]);
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(val);

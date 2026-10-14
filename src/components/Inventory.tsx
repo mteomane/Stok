@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from "react";
-import { Product, SectorField, SectorSettings } from "../types";
+import React, { useState, useEffect, useMemo } from "react";
+import { Product, SectorField, SectorSettings, FabricRoll } from "../types";
 import { auth } from "../lib/firebase";
-import { getSectorSettings, addProduct } from "../lib/firestoreService";
+import { getSectorSettings, addProduct, round2, roundQty } from "../lib/firestoreService";
 import { 
   Search, 
   Plus, 
@@ -20,16 +20,30 @@ import {
   Layers,
   FileText,
   Printer,
-  X
+  X,
+  RotateCcw,
+  Archive,
+  Tag,
+  Calendar,
+  Wrench,
+  Apple,
+  Store,
+  Clock,
+  Download
 } from "lucide-react";
 import { QRImage } from "./QRImage";
 import { BulkQRPrintModal } from "./BulkQRPrintModal";
+import { UniversalImportModal } from "./UniversalImportModal";
+import { getSectorProfile, shouldShowRolls, SECTOR_PROFILES } from "../lib/sectorConfig";
+import { exportService } from "../lib/export/ExportService";
+import { triggerFileDownload } from "../lib/export/fileDownload";
 
 interface InventoryProps {
   products: Product[];
   onAddProduct: (product: Omit<Product, "id">) => Promise<void>;
   onUpdateProduct: (id: string, updates: Partial<Product>) => Promise<void>;
   onDeleteProduct: (id: string) => Promise<void>;
+  onRestoreProduct?: (id: string) => Promise<void>;
   onRefreshData?: () => Promise<void>;
   initialFilter?: {
     onlyLowStock?: boolean;
@@ -44,14 +58,33 @@ export function Inventory({
   onAddProduct, 
   onUpdateProduct, 
   onDeleteProduct, 
+  onRestoreProduct,
   onRefreshData,
   initialFilter,
   onClearInitialFilter 
 }: InventoryProps) {
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Tümü");
   const [onlyLowStock, setOnlyLowStock] = useState<boolean>(false);
+  const [showArchived, setShowArchived] = useState<boolean>(false);
   const [highlightProductId, setHighlightProductId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(24);
+  const [isExporting, setIsExporting] = useState(false);
+
+  // Debounce search by 200ms to eliminate UI stuttering on mobile
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Reset pagination on filter change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearch, selectedCategory, onlyLowStock, showArchived, pageSize]);
 
   // Sync with quick navigation filter
   useEffect(() => {
@@ -95,6 +128,7 @@ export function Inventory({
   const [stock, setStock] = useState("");
   const [minStock, setMinStock] = useState("");
   const [sku, setSku] = useState("");
+  const [unit, setUnit] = useState("Adet");
   
   // Dynamic fields state for new product
   const [attributes, setAttributes] = useState<Record<string, string>>({});
@@ -112,10 +146,6 @@ export function Inventory({
 
   // Bulk Excel/CSV upload states
   const [showBulkModal, setShowBulkModal] = useState(false);
-  const [bulkCsvText, setBulkCsvText] = useState("");
-  const [parsedRows, setParsedRows] = useState<any[]>([]);
-  const [bulkError, setBulkError] = useState("");
-  const [bulkSuccess, setBulkSuccess] = useState("");
 
   // QR Modal states
   const [activeQrProduct, setActiveQrProduct] = useState<Product | null>(null);
@@ -136,7 +166,8 @@ export function Inventory({
 
   const handleAddRoll = async () => {
     if (!selectedRollProduct) return;
-    if (!newRollLength || parseFloat(newRollLength) <= 0) {
+    const len = round2(parseFloat(newRollLength));
+    if (isNaN(len) || len <= 0) {
       alert("Lütfen geçerli bir rulo uzunluğu girin.");
       return;
     }
@@ -144,22 +175,27 @@ export function Inventory({
     const currentRolls = selectedRollProduct.rolls || [];
     const rollNum = newRollNumber.trim() || `Top #${currentRolls.length + 1}`;
     
-    const newRoll = {
+    const newRoll: FabricRoll = {
       id: "R-" + Math.random().toString(36).substring(2, 8).toUpperCase(),
       rollNumber: rollNum,
-      length: parseFloat(newRollLength),
-      initialLength: parseFloat(newRollLength),
-      status: "available" as const
+      length: len,
+      initialLength: len,
+      soldLength: 0,
+      status: "available"
     };
 
     const updatedRolls = [...currentRolls, newRoll];
+    const newTotalStock = round2(updatedRolls.reduce((sum, r) => sum + (Number(r.length) || 0), 0));
     
     try {
-      await onUpdateProduct(selectedRollProduct.id, { rolls: updatedRolls });
+      await onUpdateProduct(selectedRollProduct.id, { 
+        rolls: updatedRolls,
+        stock: newTotalStock
+      });
       const updatedProduct = {
         ...selectedRollProduct,
         rolls: updatedRolls,
-        stock: updatedRolls.reduce((sum, r) => sum + r.length, 0)
+        stock: newTotalStock
       };
       setSelectedRollProduct(updatedProduct);
       setNewRollNumber("");
@@ -172,29 +208,39 @@ export function Inventory({
 
   const handleUpdateRoll = async (rollId: string) => {
     if (!selectedRollProduct) return;
-    if (!editingRollLength || parseFloat(editingRollLength) < 0) {
+    const newLen = round2(parseFloat(editingRollLength));
+    if (isNaN(newLen) || newLen < 0) {
       alert("Lütfen geçerli bir rulo uzunluğu girin.");
       return;
     }
 
     const updatedRolls = (selectedRollProduct.rolls || []).map((r) => {
       if (r.id === rollId) {
+        const initLen = r.initialLength !== undefined ? Number(r.initialLength) : Math.max(Number(r.length), newLen);
+        const autoStatus = newLen <= 0 ? ("sold" as const) : (editingRollStatus === "sold" ? ("available" as const) : editingRollStatus);
         return {
           ...r,
           rollNumber: editingRollNumber.trim() || r.rollNumber,
-          length: parseFloat(editingRollLength),
-          status: editingRollStatus
+          length: newLen,
+          initialLength: initLen,
+          soldLength: round2(Math.max(0, initLen - newLen)),
+          status: autoStatus
         };
       }
       return r;
     });
 
+    const newTotalStock = round2(updatedRolls.reduce((sum, r) => sum + (Number(r.length) || 0), 0));
+
     try {
-      await onUpdateProduct(selectedRollProduct.id, { rolls: updatedRolls });
+      await onUpdateProduct(selectedRollProduct.id, { 
+        rolls: updatedRolls,
+        stock: newTotalStock
+      });
       const updatedProduct = {
         ...selectedRollProduct,
         rolls: updatedRolls,
-        stock: updatedRolls.reduce((sum, r) => sum + r.length, 0)
+        stock: newTotalStock
       };
       setSelectedRollProduct(updatedProduct);
       setEditingRollId(null);
@@ -209,13 +255,17 @@ export function Inventory({
     if (!confirm("Bu kumaş topunu silmek istediğinize emin misiniz? Bu işlem toplam stok miktarını güncelleyecektir.")) return;
 
     const updatedRolls = (selectedRollProduct.rolls || []).filter((r) => r.id !== rollId);
+    const newTotalStock = round2(updatedRolls.reduce((sum, r) => sum + (Number(r.length) || 0), 0));
 
     try {
-      await onUpdateProduct(selectedRollProduct.id, { rolls: updatedRolls });
+      await onUpdateProduct(selectedRollProduct.id, { 
+        rolls: updatedRolls,
+        stock: newTotalStock
+      });
       const updatedProduct = {
         ...selectedRollProduct,
         rolls: updatedRolls,
-        stock: updatedRolls.reduce((sum, r) => sum + r.length, 0)
+        stock: newTotalStock
       };
       setSelectedRollProduct(updatedProduct);
       if (onRefreshData) await onRefreshData();
@@ -230,6 +280,10 @@ export function Inventory({
       const uid = auth.currentUser?.uid || "demo-user";
       const data = await getSectorSettings(uid);
       setSectorSettings(data);
+      const profile = getSectorProfile(data.activeSector);
+      if (profile?.defaultUnit) {
+        setUnit(profile.defaultUnit);
+      }
     } catch (err) {
       console.error("Failed to load sector settings in Inventory", err);
     }
@@ -240,56 +294,69 @@ export function Inventory({
   }, [products]);
 
   const getSectorLabel = (key?: string) => {
-    switch (key) {
-      case "tekstil":
-        return "Tekstil & Giyim Sektörü";
-      case "gida":
-        return "Gıda & Hızlı Tüketim Sektörü";
-      case "yedek_parca":
-      case "otomotiv":
-        return "Otomotiv / Yedek Parça Sektörü";
-      case "genel":
-      default:
-        return "Genel Perakende Sektörü";
-    }
+    return getSectorProfile(key).name;
   };
 
-  // Categories extraction
-  const categories = ["Tümü", ...Array.from(new Set(products.map((p) => p.category || "Genel")))];
+  // Memoized categories extraction
+  const categories = useMemo(() => ["Tümü", ...Array.from(new Set(products.map((p) => p.category || "Genel")))], [products]);
 
-  // Low stock count
-  const lowStockCount = products.filter((p) => p.stock <= p.minStock).length;
+  // Low stock count (active products only)
+  const lowStockCount = useMemo(() => products.filter((p) => p.isActive !== false && p.stock <= p.minStock).length, [products]);
+  // Archived count
+  const archivedCount = useMemo(() => products.filter((p) => p.isActive === false).length, [products]);
 
-  // Filtering
-  const filteredProducts = products.filter((p) => {
-    const matchesSearch =
-      p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase());
-    const matchesCategory = selectedCategory === "Tümü" || p.category === selectedCategory;
-    const matchesLowStock = !onlyLowStock || p.stock <= p.minStock;
-    return matchesSearch && matchesCategory && matchesLowStock;
-  });
+  // Memoized product filtering
+  const filteredProducts = useMemo(() => {
+    const q = debouncedSearch.toLowerCase().trim();
+    return products.filter((p) => {
+      const isArchived = p.isActive === false;
+      if (showArchived) {
+        if (!isArchived) return false;
+      } else {
+        if (isArchived) return false;
+      }
+
+      const matchesSearch = !q ||
+        p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
+      const matchesCategory = selectedCategory === "Tümü" || p.category === selectedCategory;
+      const matchesLowStock = !onlyLowStock || p.stock <= p.minStock;
+      return matchesSearch && matchesCategory && matchesLowStock;
+    });
+  }, [products, showArchived, debouncedSearch, selectedCategory, onlyLowStock]);
+
+  const totalPages = Math.ceil(filteredProducts.length / pageSize) || 1;
+  const paginatedProducts = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredProducts.slice(start, start + pageSize);
+  }, [filteredProducts, currentPage, pageSize]);
 
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError("");
 
+    const parsedPrice = parseFloat(price);
+    const parsedStock = parseFloat(stock);
+    const parsedMinStock = parseFloat(minStock);
+
     if (!name.trim()) return setFormError("Ürün adı boş olamaz.");
-    if (!price || parseFloat(price) < 0) return setFormError("Geçerli bir fiyat girin.");
-    if (!stock || parseInt(stock) < 0) return setFormError("Geçerli bir stok miktarı girin.");
+    if (isNaN(parsedPrice) || parsedPrice < 0) return setFormError("Geçerli bir fiyat girin.");
+    if (isNaN(parsedStock) || parsedStock < 0) return setFormError("Geçerli bir stok miktarı girin.");
 
     try {
       await onAddProduct({
         name: name.trim(),
         category: category.trim() || "Genel",
-        price: parseFloat(price),
-        stock: parseInt(stock),
-        minStock: parseInt(minStock) || 0,
+        price: round2(parsedPrice),
+        stock: roundQty(parsedStock),
+        minStock: !isNaN(parsedMinStock) && parsedMinStock >= 0 ? roundQty(parsedMinStock) : 0,
         sku: sku.trim() || undefined as any,
+        unit: unit.trim() || undefined,
         attributes,
+        metadata: attributes,
         isPackaged,
         packageUnitsCount: isPackaged ? parseInt(packageUnitsCount) : undefined,
         packageUnitName: isPackaged ? packageUnitName.trim() : undefined,
-        subUnitStock: isPackaged ? parseInt(subUnitStock) : undefined
+        subUnitStock: isPackaged ? parseFloat(subUnitStock) : undefined
       });
       
       // Reset form
@@ -299,6 +366,8 @@ export function Inventory({
       setStock("");
       setMinStock("");
       setSku("");
+      const profile = getSectorProfile(sectorSettings?.activeSector);
+      setUnit(profile?.defaultUnit || "Adet");
       setAttributes({});
       setIsPackaged(false);
       setPackageUnitsCount("10");
@@ -316,18 +385,20 @@ export function Inventory({
 
     if (!editingProduct) return;
     if (!editingProduct.name.trim()) return setFormError("Ürün adı boş olamaz.");
-    if (editingProduct.price < 0) return setFormError("Geçerli bir fiyat girin.");
-    if (editingProduct.stock < 0) return setFormError("Geçerli bir stok miktarı girin.");
+    if (isNaN(editingProduct.price) || editingProduct.price < 0) return setFormError("Geçerli bir fiyat girin.");
+    if (isNaN(editingProduct.stock) || editingProduct.stock < 0) return setFormError("Geçerli bir stok miktarı girin.");
 
     try {
       await onUpdateProduct(editingProduct.id, {
         name: editingProduct.name,
         category: editingProduct.category || "Genel",
-        price: editingProduct.price,
-        stock: editingProduct.stock,
-        minStock: editingProduct.minStock,
+        price: round2(editingProduct.price),
+        stock: roundQty(editingProduct.stock),
+        minStock: roundQty(editingProduct.minStock || 0),
         sku: editingProduct.sku,
+        unit: editingProduct.unit || undefined,
         attributes: editingProduct.attributes,
+        metadata: editingProduct.metadata || editingProduct.attributes,
         isPackaged: editingProduct.isPackaged,
         packageUnitsCount: editingProduct.packageUnitsCount,
         packageUnitName: editingProduct.packageUnitName,
@@ -340,7 +411,7 @@ export function Inventory({
   };
 
   const adjustStock = async (productId: string, currentStock: number, adjustment: number) => {
-    const newStock = Math.max(0, currentStock + adjustment);
+    const newStock = roundQty(Math.max(0, currentStock + adjustment));
     await onUpdateProduct(productId, { stock: newStock });
   };
 
@@ -392,150 +463,6 @@ export function Inventory({
     }
   };
 
-  // Bulk parser for Excel/CSV tab or comma separated values
-  const parseBulkData = () => {
-    setBulkError("");
-    setBulkSuccess("");
-    if (!bulkCsvText.trim()) {
-      setBulkError("Lütfen CSV formatında veri girin veya dosya yükleyin.");
-      return;
-    }
-
-    try {
-      const lines = bulkCsvText.split("\n");
-      const results: any[] = [];
-      const customFields = sectorSettings?.customFields || [];
-      
-      const firstLine = lines[0].trim();
-      if (!firstLine) return;
-      const separator = firstLine.includes("\t") ? "\t" : ",";
-
-      // Detect header row
-      let startIndex = 0;
-      if (
-        firstLine.toLowerCase().includes("ürün") || 
-        firstLine.toLowerCase().includes("kategori") || 
-        firstLine.toLowerCase().includes("fiyat") ||
-        firstLine.toLowerCase().includes("stok")
-      ) {
-        startIndex = 1;
-      }
-      
-      for (let i = startIndex; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-        
-        const cols = line.split(separator).map(s => s.trim().replace(/^["']|["']$/g, ""));
-        if (cols.length < 2) continue;
-
-        const attributes: Record<string, string> = {};
-        customFields.forEach((field, index) => {
-          const colVal = cols[6 + index];
-          if (colVal !== undefined && colVal !== "") {
-            attributes[field.key] = colVal;
-          }
-        });
-
-        results.push({
-          name: cols[0],
-          category: cols[1] || "Genel",
-          price: parseFloat(cols[2]) || 0,
-          stock: parseInt(cols[3]) || 0,
-          minStock: parseInt(cols[4]) || 0,
-          sku: cols[5] || "",
-          attributes
-        });
-      }
-
-      if (results.length === 0) {
-        setBulkError("Geçerli hiçbir satır çözümlenemedi. Lütfen başlıkları ve sütun ayarlarını kontrol edin.");
-      } else {
-        setParsedRows(results);
-      }
-    } catch (err) {
-      setBulkError("Dosya/Metin işlenirken hata oluştu. Lütfen formatı düzeltin.");
-    }
-  };
-
-  const handleBulkUploadSubmit = async () => {
-    if (parsedRows.length === 0) return;
-    try {
-      let count = 0;
-      for (const p of parsedRows) {
-        const skuVal = p.sku ? String(p.sku).trim() : `PROD_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-
-        // Ensure unique SKU client-side
-        const exists = products.some(item => item.sku === skuVal);
-        if (exists) {
-          continue; // skip duplicate SKU
-        }
-
-        const categoryVal = String(p.category || "Genel").trim();
-        let productRolls: any[] = [];
-        const stockVal = Number(p.stock || 0);
-
-        // Handle fabric category split into rolls
-        if (categoryVal.toLowerCase().includes("kumaş") || categoryVal.toLowerCase().includes("kumas")) {
-          let remaining = stockVal;
-          let rollCounter = 1;
-          while (remaining > 0) {
-            const rollLen = Math.min(remaining, 50);
-            productRolls.push({
-              id: "R-" + Math.random().toString(36).substring(2, 8).toUpperCase(),
-              rollNumber: `Top #${rollCounter++}`,
-              length: rollLen,
-              initialLength: rollLen,
-              status: 'available'
-            });
-            remaining -= rollLen;
-          }
-        }
-
-        await onAddProduct({
-          name: String(p.name || "İsimsiz Ürün").trim(),
-          sku: skuVal,
-          category: categoryVal,
-          price: Number(p.price || 0),
-          stock: productRolls.length > 0 ? productRolls.reduce((sum, r) => sum + r.length, 0) : stockVal,
-          minStock: Number(p.minStock || 0),
-          attributes: p.attributes || {},
-          isPackaged: false,
-          rolls: productRolls.length > 0 ? productRolls : undefined
-        });
-
-        count++;
-      }
-
-      setBulkSuccess(`${count} adet yeni ürün toplu olarak başarıyla yüklendi!`);
-      setParsedRows([]);
-      setBulkCsvText("");
-      
-      if (onRefreshData) {
-        await onRefreshData();
-      }
-      
-      setTimeout(() => {
-        setShowBulkModal(false);
-        setBulkSuccess("");
-      }, 2000);
-    } catch (err: any) {
-      setBulkError(err.message || "Yükleme sırasında hata oluştu.");
-    }
-  };
-
-  // CSV file drag & drop file reader
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const text = event.target?.result as string;
-      setBulkCsvText(text);
-    };
-    reader.readAsText(file);
-  };
-
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(val);
   };
@@ -563,16 +490,34 @@ export function Inventory({
 
           {/* Bulk Upload Button */}
           <button
-            onClick={() => {
-              setBulkError("");
-              setBulkSuccess("");
-              setParsedRows([]);
-              setShowBulkModal(true);
-            }}
-            className="flex-1 sm:flex-none px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all active:scale-95"
+            onClick={() => setShowBulkModal(true)}
+            className="flex-1 sm:flex-none px-4 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer shadow-sm"
           >
             <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-            Excel/CSV Yükle
+            Excel (.xlsx) Yükle
+          </button>
+
+          {/* Quick Export Button */}
+          <button
+            type="button"
+            disabled={isExporting}
+            onClick={async () => {
+              try {
+                setIsExporting(true);
+                const uid = auth.currentUser?.uid || "demo-user";
+                const result = await exportService.exportProducts(uid, "csv");
+                triggerFileDownload(result.content, result.fileName, result.mimeType);
+              } catch (err: any) {
+                alert(err.message || "Dışa aktarma sırasında hata oluştu.");
+              } finally {
+                setIsExporting(false);
+              }
+            }}
+            className="flex-1 sm:flex-none px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+            title="Tüm ürün kataloğunu Excel uyumlu CSV olarak indir"
+          >
+            <Download className="w-4 h-4 text-indigo-600" />
+            <span>{isExporting ? "İndiriliyor..." : "Excel/CSV İndir"}</span>
           </button>
 
           <button
@@ -630,6 +575,26 @@ export function Inventory({
           </span>
         </button>
 
+        {/* Toggle Archived / Trash Bin */}
+        {archivedCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowArchived(!showArchived)}
+            className={`px-3 py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 whitespace-nowrap border cursor-pointer ${
+              showArchived
+                ? "bg-slate-800 text-white border-slate-800 shadow-sm"
+                : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+            }`}
+            title="Silinen / Arşivlenen ürünleri göster"
+          >
+            <Archive className="w-3.5 h-3.5" />
+            <span>{showArchived ? "Aktif Ürünlere Dön" : "Arşiv"}</span>
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-slate-100 text-slate-700">
+              {archivedCount}
+            </span>
+          </button>
+        )}
+
         {/* Categories scroll horizontally */}
         <div className="flex gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-thin">
           {categories.map((cat) => (
@@ -685,7 +650,7 @@ export function Inventory({
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filteredProducts.map((p) => {
+          {paginatedProducts.map((p) => {
             const isLowStock = p.stock <= p.minStock;
             const isHighlighted = p.id === highlightProductId;
             return (
@@ -730,14 +695,77 @@ export function Inventory({
                     </button>
                   </div>
 
-                  {/* Dynamic Sector Attributes Badges */}
-                  {p.attributes && Object.entries(p.attributes).length > 0 && (
+                  {/* Dynamic Sector Attributes & Smart Badges */}
+                  {((p.metadata && Object.keys(p.metadata).length > 0) || (p.attributes && Object.keys(p.attributes).length > 0)) && (
                     <div className="flex flex-wrap gap-1.5 mt-3">
-                      {Object.entries(p.attributes).map(([key, val]) => {
-                        if (!val) return null;
+                      {/* Food SKT / Expiry Smart Badge */}
+                      {(() => {
+                        const expiry = p.metadata?.expiryDate || p.attributes?.SKT || p.attributes?.expiryDate;
+                        if (!expiry) return null;
+                        const expDate = new Date(expiry);
+                        const isExpired = !isNaN(expDate.getTime()) && expDate.getTime() < new Date().setHours(0, 0, 0, 0);
+                        const diffDays = Math.ceil((expDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                        const isExpiringSoon = !isExpired && diffDays <= 30;
+
+                        return (
+                          <span
+                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md flex items-center gap-1 border ${
+                              isExpired
+                                ? "bg-rose-100 text-rose-800 border-rose-300 animate-pulse"
+                                : isExpiringSoon
+                                ? "bg-amber-100 text-amber-800 border-amber-300"
+                                : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            }`}
+                            title={`Son Tüketim Tarihi: ${expiry}`}
+                          >
+                            <Calendar className="w-2.5 h-2.5" />
+                            SKT: {expiry} {isExpired ? "(Geçmiş!)" : isExpiringSoon ? `(${diffDays} gün)` : ""}
+                          </span>
+                        );
+                      })()}
+
+                      {/* Food Batch/Lot Smart Badge */}
+                      {(() => {
+                        const batch = p.metadata?.batchNumber || p.attributes?.batchNumber;
+                        if (!batch) return null;
+                        return (
+                          <span className="text-[9px] bg-slate-100 border border-slate-200 text-slate-700 font-mono font-bold px-1.5 py-0.5 rounded-md">
+                            Lot: {batch}
+                          </span>
+                        );
+                      })()}
+
+                      {/* Spare Parts OEM / Part Number Smart Badge */}
+                      {(() => {
+                        const partNo = p.metadata?.partNumber || p.attributes?.partNumber || p.attributes?.SeriNo;
+                        if (!partNo) return null;
+                        return (
+                          <span className="text-[9px] bg-blue-50 border border-blue-200 text-blue-800 font-mono font-bold px-1.5 py-0.5 rounded-md flex items-center gap-1">
+                            <Wrench className="w-2.5 h-2.5 text-blue-600" />
+                            Parça No: {partNo}
+                          </span>
+                        );
+                      })()}
+
+                      {/* Spare Parts Vehicle Compatibility Smart Badge */}
+                      {(() => {
+                        const compat = p.metadata?.vehicleCompatibility || p.attributes?.vehicleCompatibility || p.attributes?.UyumluModel;
+                        if (!compat) return null;
+                        return (
+                          <span className="text-[9px] bg-indigo-50 border border-indigo-200 text-indigo-800 font-medium px-1.5 py-0.5 rounded-md">
+                            Uyum: {compat}
+                          </span>
+                        );
+                      })()}
+
+                      {/* Other dynamic attributes */}
+                      {Object.entries({ ...(p.attributes || {}), ...(p.metadata || {}) }).map(([key, val]) => {
+                        if (!val || ["expiryDate", "SKT", "batchNumber", "partNumber", "SeriNo", "vehicleCompatibility", "UyumluModel"].includes(key)) {
+                          return null;
+                        }
                         return (
                           <span key={key} className="text-[9px] bg-slate-100 border border-slate-200/55 text-slate-600 font-bold px-1.5 py-0.5 rounded-md">
-                            {key}: <span className="font-semibold text-slate-800">{val}</span>
+                            {key}: <span className="font-semibold text-slate-800">{String(val)}</span>
                           </span>
                         );
                       })}
@@ -747,7 +775,7 @@ export function Inventory({
                   <div className="flex items-baseline gap-2 mt-4">
                     <span className="text-xl font-bold text-slate-900">{formatCurrency(p.price)}</span>
                     <span className="text-xs text-slate-400">
-                      / {p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas") ? "metre" : p.packageUnitName ? p.packageUnitName.toLowerCase() : "adet"}
+                      / {p.unit ? p.unit.toLowerCase() : (p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas") ? "metre" : p.packageUnitName ? p.packageUnitName.toLowerCase() : "adet")}
                     </span>
                   </div>
                 </div>
@@ -778,8 +806,8 @@ export function Inventory({
                   </div>
                 )}
 
-                {/* Fabric Rolls Tracking Section */}
-                {(p.category?.toLowerCase() === "kumaş" || p.category?.toLowerCase() === "kumas") && (
+                {/* Fabric Rolls Tracking Section (Textile / Rolls enabled only) */}
+                {shouldShowRolls(p, sectorSettings?.activeSector) && (
                   <div className="mt-4 bg-indigo-50/40 p-3 rounded-xl border border-indigo-100 text-xs space-y-2">
                     <div className="flex justify-between items-center">
                       <div>
@@ -833,9 +861,9 @@ export function Inventory({
                       className={`text-lg font-bold mt-0.5 ${isLowStock ? "text-rose-600" : "text-emerald-600"}`}
                     >
                       {p.stock}{" "}
-                      {p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas")
+                      {p.unit || (p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas")
                         ? "Metre"
-                        : p.packageUnitName || "Adet"}
+                        : p.packageUnitName || "Adet")}
                       {(p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas")) &&
                         p.rolls && p.rolls.length > 0 && (
                           <span className="text-xs font-semibold text-slate-500 ml-1">
@@ -871,30 +899,94 @@ export function Inventory({
                       </button>
                     </div>
 
-                    <button
-                      onClick={() => setEditingProduct(p)}
-                      title="Düzenle"
-                      className="p-1.5 text-slate-400 hover:text-indigo-600 active:scale-90 transition-all"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
+                    {p.isActive === false ? (
+                      onRestoreProduct && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (confirm(`"${p.name}" ürününü arşivden geri yüklemek istiyor musunuz?`)) {
+                              onRestoreProduct(p.id);
+                            }
+                          }}
+                          title="Arşivden Geri Yükle"
+                          className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-lg text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer shadow-sm"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Geri Yükle</span>
+                        </button>
+                      )
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => setEditingProduct(p)}
+                          title="Düzenle"
+                          className="p-1.5 text-slate-400 hover:text-indigo-600 active:scale-90 transition-all cursor-pointer"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
 
-                    <button
-                      onClick={() => {
-                        if (confirm(`"${p.name}" ürününü silmek istediğinize emin misiniz?`)) {
-                          onDeleteProduct(p.id);
-                        }
-                      }}
-                      title="Sil"
-                      className="p-1.5 text-slate-400 hover:text-rose-500 active:scale-90 transition-all"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                        <button
+                          onClick={() => {
+                            if (confirm(`"${p.name}" ürününü arşive kaldırmak istediğinize emin misiniz? (Ürün geçmiş satışlarda korunmaya devam edecektir)`)) {
+                              onDeleteProduct(p.id);
+                            }
+                          }}
+                          title="Arşive Kaldır (Soft Delete)"
+                          className="p-1.5 text-slate-400 hover:text-rose-500 active:scale-90 transition-all cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Pagination Controls */}
+      {filteredProducts.length > 0 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-sm mt-4">
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <span>Sayfa Başına:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold text-slate-700 focus:outline-none"
+            >
+              <option value={12}>12 Ürün</option>
+              <option value={24}>24 Ürün</option>
+              <option value={48}>48 Ürün</option>
+              <option value={96}>96 Ürün</option>
+            </select>
+            <span className="ml-2">
+              Toplam <strong>{filteredProducts.length}</strong> üründen <strong>{Math.min(filteredProducts.length, (currentPage - 1) * pageSize + 1)}-{Math.min(filteredProducts.length, currentPage * pageSize)}</strong> arası
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+            >
+              Önceki
+            </button>
+            <span className="text-xs font-bold text-slate-700 px-2">
+              {currentPage} / {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage >= totalPages}
+              className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+            >
+              Sonraki
+            </button>
+          </div>
         </div>
       )}
 
@@ -982,7 +1074,7 @@ export function Inventory({
                 </div>
               )}
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <label className="text-xs font-bold text-slate-500 block mb-1">Fiyat (₺) *</label>
                   <input
@@ -992,29 +1084,47 @@ export function Inventory({
                     value={price}
                     onChange={(e) => setPrice(e.target.value)}
                     placeholder="120.00"
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
                   />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-slate-500 block mb-1">Stok *</label>
                   <input
                     type="number"
+                    step="any"
                     required
                     value={stock}
                     onChange={(e) => setStock(e.target.value)}
                     placeholder="50"
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
                   />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-slate-500 block mb-1">Min. Stok</label>
                   <input
                     type="number"
+                    step="any"
                     value={minStock}
                     onChange={(e) => setMinStock(e.target.value)}
                     placeholder="5"
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
                   />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-500 block mb-1">Birim</label>
+                  <input
+                    type="text"
+                    value={unit}
+                    onChange={(e) => setUnit(e.target.value)}
+                    placeholder="Adet, Metre..."
+                    list="unit-suggestions"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 font-medium"
+                  />
+                  <datalist id="unit-suggestions">
+                    {getSectorProfile(sectorSettings?.activeSector).allowedUnits.map((u) => (
+                      <option key={u} value={u} />
+                    ))}
+                  </datalist>
                 </div>
               </div>
 
@@ -1154,10 +1264,12 @@ export function Inventory({
                         <label className="text-xs font-bold text-slate-600 block mb-1">{field.label}</label>
                         <input
                           type={field.type}
-                          value={(editingProduct.attributes && editingProduct.attributes[field.key]) || ""}
+                          value={((editingProduct.metadata && editingProduct.metadata[field.key]) || (editingProduct.attributes && editingProduct.attributes[field.key])) || ""}
                           onChange={(e) => {
-                            const newAttrs = { ...(editingProduct.attributes || {}), [field.key]: e.target.value };
-                            setEditingProduct({ ...editingProduct, attributes: newAttrs });
+                            const val = e.target.value;
+                            const newAttrs = { ...(editingProduct.attributes || {}), [field.key]: val };
+                            const newMeta = { ...(editingProduct.metadata || {}), [field.key]: val };
+                            setEditingProduct({ ...editingProduct, attributes: newAttrs, metadata: newMeta });
                           }}
                           placeholder={field.label}
                           className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -1168,7 +1280,7 @@ export function Inventory({
                 </div>
               )}
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <label className="text-xs font-bold text-slate-500 block mb-1">Fiyat (₺) *</label>
                   <input
@@ -1177,27 +1289,45 @@ export function Inventory({
                     required
                     value={editingProduct.price}
                     onChange={(e) => setEditingProduct({ ...editingProduct, price: parseFloat(e.target.value) || 0 })}
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
                   />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-slate-500 block mb-1">Stok *</label>
                   <input
                     type="number"
+                    step="any"
                     required
                     value={editingProduct.stock}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, stock: parseInt(e.target.value) || 0 })}
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
+                    onChange={(e) => setEditingProduct({ ...editingProduct, stock: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
                   />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-slate-500 block mb-1">Min. Stok</label>
                   <input
                     type="number"
+                    step="any"
                     value={editingProduct.minStock}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, minStock: parseInt(e.target.value) || 0 })}
-                    className="w-full px-4 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
+                    onChange={(e) => setEditingProduct({ ...editingProduct, minStock: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
                   />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-500 block mb-1">Birim</label>
+                  <input
+                    type="text"
+                    value={editingProduct.unit || "Adet"}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, unit: e.target.value })}
+                    placeholder="Adet, Metre..."
+                    list="edit-unit-suggestions"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 font-medium"
+                  />
+                  <datalist id="edit-unit-suggestions">
+                    {getSectorProfile(sectorSettings?.activeSector).allowedUnits.map((u) => (
+                      <option key={u} value={u} />
+                    ))}
+                  </datalist>
                 </div>
               </div>
 
@@ -1269,162 +1399,18 @@ export function Inventory({
         </div>
       )}
 
-      {/* Toplu Ürün Yükleme (Bulk Upload Modal) */}
-      {showBulkModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl w-full max-w-2xl p-6 shadow-2xl border border-slate-200 flex flex-col max-h-[92vh] animate-fade-in">
-            <div className="flex justify-between items-center border-b border-slate-150 pb-3 mb-4">
-              <h3 className="font-bold text-slate-800 text-base flex items-center gap-2">
-                <FileSpreadsheet className="w-5 h-5 text-emerald-600" />
-                Excel / CSV Toplu Ürün Yükleyici
-              </h3>
-              <button onClick={() => setShowBulkModal(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
-            </div>
-
-            <div className="space-y-4 overflow-y-auto flex-1 pr-1 text-xs text-slate-600">
-              <p>
-                Kendi Excel dosyanızdan kopyaladığınız verileri aşağıdaki kutuya yapıştırabilir ya da bir `.csv` dosyası sürükleyip bırakabilirsiniz.
-              </p>
-
-              {/* Guide card */}
-              <div className="bg-amber-50/50 border border-amber-200 p-3.5 rounded-lg text-[11px] leading-relaxed text-amber-800 space-y-1">
-                <span className="font-bold block flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                  Sektörünüze Özel Desteklenen Sütun Yapısı ({getSectorLabel(sectorSettings?.activeSector)}):
-                </span>
-                <code className="block bg-amber-100/60 p-1.5 rounded font-mono select-all font-bold text-slate-800">
-                  Ürün Adı, Kategori, Fiyat, Stok, Kritik Stok, Barkod/SKU
-                  {sectorSettings?.customFields && sectorSettings.customFields.length > 0
-                    ? `, ${sectorSettings.customFields.map((f) => f.label).join(", ")}`
-                    : ""}
-                </code>
-                <span className="block text-[10px] text-amber-700">
-                  Örn: <code className="font-mono bg-amber-100/40 px-1 py-0.5 rounded">
-                    {sectorSettings?.activeSector === "yedek_parca" || sectorSettings?.activeSector === "otomotiv"
-                      ? "Fren Balatası, Otomotiv, 450.00, 25, 5, BARKOD01, SR-991, Corolla, A-12"
-                      : "Desenli İpek Kumaş, Kumaş, 350.00, 100, 15, BARKOD123, Mavi, 150cm, Pamuk"}
-                  </code>
-                </span>
-              </div>
-
-              {/* Drag Drop & Text Input */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="font-bold text-slate-500 block">CSV Dosyası Yükle</label>
-                  <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:bg-slate-50 transition-colors relative flex flex-col justify-center items-center">
-                    <FileText className="w-8 h-8 text-slate-300 mb-2" />
-                    <span className="text-xs text-slate-400 block font-semibold">Buraya bir .csv dosyası bırakın veya</span>
-                    <input
-                      type="file"
-                      accept=".csv, .txt"
-                      onChange={handleFileUpload}
-                      className="absolute inset-0 opacity-0 cursor-pointer"
-                    />
-                    <span className="text-[10px] text-indigo-500 font-bold block mt-1 hover:underline">Bilgisayardan Seçin</span>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="font-bold text-slate-500 block">Excel'den Kopyala / Yapıştır</label>
-                  <textarea
-                    rows={4}
-                    value={bulkCsvText}
-                    onChange={(e) => setBulkCsvText(e.target.value)}
-                    placeholder="Adı, Kategorisi, Fiyatı, Stok, MinStok, Barkod..."
-                    className="w-full p-2.5 border border-slate-200 rounded-xl font-mono text-[10px] bg-slate-50 focus:bg-white focus:outline-none resize-none"
-                  />
-                </div>
-              </div>
-
-              {/* Parse button */}
-              <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border border-slate-150">
-                <span className="text-[10px] text-slate-400">Verileri yapıştırdıktan sonra önizleme için ayrıştırın</span>
-                <button
-                  type="button"
-                  onClick={parseBulkData}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-lg text-xs"
-                >
-                  Ayrıştır ve Önizle
-                </button>
-              </div>
-
-              {bulkError && (
-                <div className="bg-rose-50 text-rose-600 p-3 rounded-lg border border-rose-200 flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                  <span>{bulkError}</span>
-                </div>
-              )}
-
-              {bulkSuccess && (
-                <div className="bg-emerald-50 text-emerald-600 p-3 rounded-lg border border-emerald-200 flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-                  <span>{bulkSuccess}</span>
-                </div>
-              )}
-
-              {/* Parsed Preview Table */}
-              {parsedRows.length > 0 && (
-                <div className="border border-slate-200 rounded-xl overflow-hidden max-h-52 overflow-y-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="bg-slate-100 border-b border-slate-200 font-bold text-slate-600">
-                        <th className="p-2">Ürün Adı</th>
-                        <th className="p-2">Kategori</th>
-                        <th className="p-2 text-right">Fiyat</th>
-                        <th className="p-2 text-center">Stok</th>
-                        <th className="p-2 text-center">Min. Stok</th>
-                        <th className="p-2 font-mono">Barkod/SKU</th>
-                        {sectorSettings?.customFields?.map((f) => (
-                          <th key={f.key} className="p-2 text-indigo-700 font-bold bg-indigo-50/50">{f.label}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-slate-500 font-medium">
-                      {parsedRows.map((row, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50/50">
-                          <td className="p-2 font-bold text-slate-700 truncate max-w-[120px]">{row.name}</td>
-                          <td className="p-2">{row.category}</td>
-                          <td className="p-2 text-right">{formatCurrency(row.price)}</td>
-                          <td className="p-2 text-center text-emerald-600 font-bold">{row.stock}</td>
-                          <td className="p-2 text-center">{row.minStock}</td>
-                          <td className="p-2 font-mono text-[10px]">{row.sku || "Otomatik"}</td>
-                          {sectorSettings?.customFields?.map((f) => (
-                            <td key={f.key} className="p-2 text-slate-700 font-medium bg-indigo-50/20">
-                              {row.attributes?.[f.key] || "-"}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            <div className="pt-4 border-t border-slate-150 flex gap-2">
-              <button
-                type="button"
-                onClick={() => setShowBulkModal(false)}
-                className="flex-1 py-2.5 border border-slate-200 hover:bg-slate-50 text-slate-600 font-bold text-sm rounded-lg"
-              >
-                İptal
-              </button>
-              <button
-                type="button"
-                disabled={parsedRows.length === 0}
-                onClick={handleBulkUploadSubmit}
-                className={`flex-1 py-2.5 font-bold text-sm rounded-lg text-white shadow-sm transition-colors ${
-                  parsedRows.length === 0
-                    ? "bg-slate-200 text-slate-400 cursor-not-allowed"
-                    : "bg-emerald-600 hover:bg-emerald-700"
-                }`}
-              >
-                {parsedRows.length > 0 ? `${parsedRows.length} Ürünü Yüklemeyi Başlat` : "Veri Yüklenmedi"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Universal Excel (.xlsx) / CSV Toplu Ürün Yükleme Modalı */}
+      <UniversalImportModal
+        isOpen={showBulkModal}
+        onClose={() => setShowBulkModal(false)}
+        onSuccess={async () => {
+          if (onRefreshData) {
+            await onRefreshData();
+          }
+        }}
+        existingProducts={products}
+        activeSector={sectorSettings?.activeSector}
+      />
 
       {/* QR Code Viewer Modal Overlay */}
       {activeQrProduct && (

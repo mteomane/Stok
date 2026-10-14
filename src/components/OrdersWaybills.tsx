@@ -18,19 +18,24 @@ import {
   Eye, 
   X,
   PlusCircle,
-  Scissors
+  Scissors,
+  RotateCcw,
+  ShieldAlert
 } from "lucide-react";
 import { Order, Product, Customer, CompanyInfo, FabricRoll, OrderItem } from "../types";
 import { auth } from "../lib/firebase";
 import { 
   getOrders, 
-  addOrder, 
+  createOrderAtomic,
+  cancelOrderAtomic,
   updateOrder, 
   deleteOrder, 
   getCustomers, 
   updateCustomer, 
   getCompanyInfo,
-  updateProduct
+  getOrCreateTenantContext,
+  round2,
+  roundQty
 } from "../lib/firestoreService";
 
 interface OrdersWaybillsProps {
@@ -41,6 +46,7 @@ interface OrdersWaybillsProps {
 export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsProps) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [currentUserRole, setCurrentUserRole] = useState<string>("owner");
   const [company, setCompany] = useState<CompanyInfo>({
     name: "",
     address: "",
@@ -100,14 +106,18 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
       setIsLoading(true);
       const uid = auth.currentUser?.uid;
       if (!uid) throw new Error("Oturum açık değil.");
-      const [ordersRes, customersRes, companyRes] = await Promise.all([
+      const [ordersRes, customersRes, companyRes, contextRes] = await Promise.all([
         getOrders(uid),
         getCustomers(uid),
-        getCompanyInfo(uid)
+        getCompanyInfo(uid),
+        getOrCreateTenantContext(uid)
       ]);
       setOrders(ordersRes);
       setCustomers(customersRes);
       setCompany(companyRes);
+      if (contextRes?.role) {
+        setCurrentUserRole(contextRes.role);
+      }
     } catch (err: any) {
       setError(err.message || "Veriler sunucudan yüklenirken bir hata oluştu.");
     } finally {
@@ -170,7 +180,7 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
     setOrderItems(updated);
   };
 
-  // Create Order API Call
+  // Create Order API Call (FAZ 13-A9-6-B: ATOMIC TRANSACTION WITH IDEMPOTENCY)
   const handleCreateOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (orderItems.length === 0) {
@@ -188,155 +198,27 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
       const uid = auth.currentUser?.uid;
       if (!uid) throw new Error("Oturum açık değil.");
 
-      const resolvedOrderItems: any[] = [];
-      let calculatedTotal = 0;
+      const idempotencyKey = `ord_ui_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-      // 1. Check stock
-      for (const item of orderItems) {
-        const product = products.find(p => p.id === item.productId);
-        if (!product) {
-          throw new Error(`Ürün bulunamadı: ID ${item.productId}`);
-        }
-
-        const qty = Number(item.quantity);
-        const rollId = item.selectedRollId;
-        const cutLen = item.cutLength !== undefined ? Number(item.cutLength) : undefined;
-        const qtyToDeduct = cutLen !== undefined ? cutLen : qty;
-
-        if (rollId && product.rolls) {
-          const roll = product.rolls.find(r => r.id === rollId);
-          if (!roll) {
-            throw new Error(`Kumaş topu bulunamadı: ID ${rollId}`);
-          }
-          if (roll.length < qtyToDeduct) {
-            throw new Error(`Seçilen kumaş topunda (${roll.rollNumber}) yeterli miktar yok! Kalan: ${roll.length}m`);
-          }
-        } else {
-          if (product.stock < qtyToDeduct) {
-            throw new Error(`Yetersiz stok! ${product.name} için kalan: ${product.stock}m`);
-          }
-        }
-
-        resolvedOrderItems.push({
-          productId: product.id,
-          productName: product.name,
-          quantity: qty,
-          price: Number(item.price || product.price),
-          rollId: rollId,
-          rollNumber: rollId && product.rolls ? product.rolls.find(r => r.id === rollId)?.rollNumber : undefined,
-          cutLength: cutLen
-        });
-        calculatedTotal += Number(item.price || product.price) * qty;
-      }
-
-      // 2. Deduct stock
-      for (const item of resolvedOrderItems) {
-        const product = products.find(p => p.id === item.productId)!;
-        const qtyToDeduct = item.cutLength !== undefined ? item.cutLength : item.quantity;
-
-        let newStock = product.stock;
-        let newRolls = product.rolls ? [...product.rolls] : undefined;
-
-        if (item.rollId && newRolls) {
-          newRolls = newRolls.map(r => {
-            if (r.id === item.rollId) {
-              const updatedLen = Math.max(0, r.length - qtyToDeduct);
-              return {
-                ...r,
-                length: updatedLen,
-                status: updatedLen <= 0 ? 'sold' as const : r.status
-              };
-            }
-            return r;
-          });
-          newStock = newRolls.reduce((sum, r) => sum + r.length, 0);
-        } else {
-          newStock = Math.max(0, product.stock - qtyToDeduct);
-          if (newRolls && newRolls.length > 0) {
-            let remaining = qtyToDeduct;
-            newRolls = newRolls.map(r => {
-              if (r.status === 'available' && r.length > 0 && remaining > 0) {
-                const dec = Math.min(r.length, remaining);
-                remaining -= dec;
-                const updatedLen = Math.max(0, r.length - dec);
-                return {
-                  ...r,
-                  length: updatedLen,
-                  status: updatedLen <= 0 ? 'sold' as const : r.status
-                };
-              }
-              return r;
-            });
-            newStock = newRolls.reduce((sum, r) => sum + r.length, 0);
-          }
-        }
-
-        // Update product in DB
-        await updateProduct(product.id, {
-          stock: newStock,
-          rolls: newRolls
-        });
-      }
-
-      // 3. Create the Order
-      const orderNo = `SIP-${Math.floor(1000 + Math.random() * 9000)}`;
-      const newOrderObj = {
-        orderNo,
-        customerId: selectedCustomerId || null,
-        customerName: rawCustomerDetails.name,
+      await createOrderAtomic(uid, {
+        items: orderItems.map(item => ({
+          productId: item.productId,
+          quantity: Number(item.quantity),
+          price: Number(item.price !== undefined && item.price !== null ? item.price : (products.find(p => p.id === item.productId)?.price || 0)),
+          selectedRollId: item.selectedRollId,
+          cutLength: item.cutLength !== undefined ? Number(item.cutLength) : undefined
+        })),
+        customerId: selectedCustomerId || undefined,
         customerDetails: rawCustomerDetails,
-        items: resolvedOrderItems,
-        totalAmount: calculatedTotal,
         amountPaid: Number(amountPaid || 0),
-        status: (waybillNo ? "Sevk Edildi" : "Sipariş Alındı") as Order["status"],
-        orderDate: new Date().toISOString(),
-        waybillNo: waybillNo || null,
-        waybillDate: waybillDate || null,
-        shipDate: shipDate || null,
-        notes: orderNotes
-      };
+        waybillNo: waybillNo || undefined,
+        waybillDate: waybillDate || undefined,
+        shipDate: shipDate || undefined,
+        notes: orderNotes || undefined,
+        idempotencyKey
+      });
 
-      const addedOrder = await addOrder(uid, newOrderObj);
-
-      // 4. Customer Ledger Link
-      if (selectedCustomerId) {
-        const customer = customers.find(c => c.id === selectedCustomerId);
-        if (customer) {
-          const transactions = [...(customer.transactions || [])];
-          let totalDebt = customer.totalDebt || 0;
-          let totalPaid = customer.totalPaid || 0;
-
-          transactions.unshift({
-            id: "T_ORD_" + addedOrder.id,
-            type: "sale",
-            amount: calculatedTotal,
-            description: `Sipariş Alımı (No: #${orderNo})`,
-            timestamp: new Date().toISOString()
-          });
-          totalDebt += calculatedTotal;
-
-          const paid = Number(amountPaid || 0);
-          if (paid > 0) {
-            transactions.unshift({
-              id: "T_ORD_PAY_" + addedOrder.id,
-              type: "payment",
-              amount: paid,
-              description: `Sipariş Ödemesi (No: #${orderNo})`,
-              timestamp: new Date().toISOString()
-            });
-            totalDebt = Math.max(0, totalDebt - paid);
-            totalPaid += paid;
-          }
-
-          await updateCustomer(selectedCustomerId, {
-            totalDebt,
-            totalPaid,
-            transactions
-          });
-        }
-      }
-
-      setSuccess("Sipariş başarıyla oluşturuldu, stoklar düşürüldü!");
+      setSuccess("Sipariş başarıyla oluşturuldu ve stoklar atomik olarak düşürüldü!");
       setIsCreateModalOpen(false);
       
       // Reset form
@@ -356,12 +238,72 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
     }
   };
 
+  // Cancel Order API Call (FAZ 13-A9-6-B: ATOMIC CANCELLATION & STOCK RESTORATION)
+  const handleCancelOrder = async (order: Order) => {
+    const isAdminOrOwner = currentUserRole === "owner" || currentUserRole === "admin";
+    if (!isAdminOrOwner) {
+      alert("Yetkilendirme Hatası: Sipariş iptali yalnızca 'owner' veya 'admin' yetkisine sahip kullanıcılar tarafından yapılabilir.");
+      return;
+    }
+
+    if (order.status === "İptal Edildi") {
+      alert("Bu sipariş zaten iptal edilmiştir.");
+      return;
+    }
+
+    const reason = window.prompt("Sipariş iptal nedeni giriniz:", "Müşteri talebi ile iptal");
+    if (reason === null) return; // Kullanıcı vazgeçti
+
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) throw new Error("Oturum açık değil.");
+
+      const cancelKey = `cancel_ui_${order.id}_${Date.now()}`;
+      await cancelOrderAtomic(uid, {
+        orderId: order.id,
+        reason: reason.trim() || undefined,
+        idempotencyKey: cancelKey
+      });
+
+      setSuccess("Sipariş başarıyla iptal edildi ve stoklar güvenle depoya iade edildi!");
+      await loadData();
+      onRefreshProducts();
+      setTimeout(() => setSuccess(""), 4000);
+    } catch (err: any) {
+      alert(err.message || "Sipariş iptal edilirken bir hata oluştu.");
+    }
+  };
+
   // Edit Order Status & Waybill Info API Call
   const handleEditOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedOrder) return;
 
     try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) throw new Error("Oturum açık değil.");
+      const isAdminOrOwner = currentUserRole === "owner" || currentUserRole === "admin";
+
+      // If user is transitioning status to 'İptal Edildi', trigger atomic cancel flow
+      if (editStatus === "İptal Edildi" && selectedOrder.status !== "İptal Edildi") {
+        if (!isAdminOrOwner) {
+          alert("Yetkilendirme Hatası: Siparişi iptal durumuna almak yalnızca 'owner' veya 'admin' rollerine aittir.");
+          return;
+        }
+
+        await cancelOrderAtomic(uid, {
+          orderId: selectedOrder.id,
+          reason: "Durum düzenleme ekranından iptal edildi"
+        });
+
+        setSuccess("Sipariş iptal edildi ve stoklar atomik olarak geri yüklendi!");
+        setIsEditModalOpen(false);
+        await loadData();
+        onRefreshProducts();
+        setTimeout(() => setSuccess(""), 4000);
+        return;
+      }
+
       const updates: Partial<Order> = {
         status: editStatus,
         waybillNo: editWaybillNo || null,
@@ -409,16 +351,27 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
     }
   };
 
-  // Delete Order
-  const handleDeleteOrder = async (id: string) => {
-    if (!window.confirm("Bu sipariş kaydını silmek istediğinize emin misiniz? (Stoklar geri yüklenmeyecektir)")) return;
+  // Delete Order (FAZ 13-A9-6-B: SAFEGUARDED DELETION)
+  const handleDeleteOrder = async (order: Order) => {
+    const isAdminOrOwner = currentUserRole === "owner" || currentUserRole === "admin";
+    if (!isAdminOrOwner) {
+      alert("Yetkilendirme Hatası: Sipariş silme yetkisi yalnızca 'owner' veya 'admin' rollerine aittir.");
+      return;
+    }
+
+    if (order.stockDeducted === true && order.stockRestored !== true) {
+      alert("GÜVENLİK ENGELİ: Bu siparişin stokları düşülmüştür ve henüz geri alınmamıştır. Stok ve denetim tutarlılığı için sipariş doğrudan silinemez. Lütfen önce 'Siparişi İptal Et' işlemi yaparak stokları geri yükleyiniz.");
+      return;
+    }
+
+    if (!window.confirm("Bu sipariş kaydını silmek istediğinize emin misiniz?")) return;
     try {
-      await deleteOrder(id);
+      await deleteOrder(order.id);
       setSuccess("Sipariş başarıyla silindi.");
       await loadData();
       setTimeout(() => setSuccess(""), 4000);
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || "Sipariş silinirken hata oluştu.");
     }
   };
 
@@ -635,6 +588,16 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
                       {/* Status */}
                       <td className="p-4">
                         {getStatusBadge(order.status)}
+                        {order.stockRestored && (
+                          <span className="text-[9px] text-emerald-600 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100 block mt-1 w-fit">
+                            ✓ Stok İade Edildi
+                          </span>
+                        )}
+                        {order.manualReconciliationRequired && (
+                          <span className="text-[9px] text-amber-600 font-bold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 block mt-1 w-fit">
+                            ⚠ Manuel Stok Kontrolü
+                          </span>
+                        )}
                       </td>
 
                       {/* Action buttons */}
@@ -646,7 +609,7 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
                               setSelectedOrder(order);
                               setIsPrintModalOpen(true);
                             }}
-                            className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded transition-colors"
+                            className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded transition-colors cursor-pointer"
                             title="İrsaliye Yazdır (A4)"
                           >
                             <Printer className="w-4 h-4" />
@@ -663,17 +626,46 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
                               setEditAmountPaid(order.amountPaid || 0);
                               setIsEditModalOpen(true);
                             }}
-                            className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-800 rounded transition-colors"
+                            className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-800 rounded transition-colors cursor-pointer"
                             title="Durum / İrsaliye Düzenle"
                           >
                             <Edit3 className="w-4 h-4" />
                           </button>
 
+                          {/* Cancel Order Button */}
+                          {order.status !== "İptal Edildi" && (
+                            <button
+                              onClick={() => handleCancelOrder(order)}
+                              disabled={!(currentUserRole === "owner" || currentUserRole === "admin")}
+                              className={`p-1.5 rounded transition-colors ${
+                                (currentUserRole === "owner" || currentUserRole === "admin")
+                                  ? "hover:bg-amber-50 text-slate-400 hover:text-amber-600 cursor-pointer"
+                                  : "opacity-30 cursor-not-allowed text-slate-300"
+                              }`}
+                              title={
+                                (currentUserRole === "owner" || currentUserRole === "admin")
+                                  ? "Siparişi İptal Et (Stokları Geri Yükle)"
+                                  : "Yalnızca Yöneticiler sipariş iptal edebilir"
+                              }
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                            </button>
+                          )}
+
                           {/* Delete order */}
                           <button
-                            onClick={() => handleDeleteOrder(order.id)}
-                            className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-rose-600 rounded transition-colors"
-                            title="Siparişi Sil"
+                            onClick={() => handleDeleteOrder(order)}
+                            disabled={!(currentUserRole === "owner" || currentUserRole === "admin")}
+                            className={`p-1.5 rounded transition-colors ${
+                              (currentUserRole === "owner" || currentUserRole === "admin")
+                                ? "hover:bg-slate-100 text-slate-400 hover:text-rose-600 cursor-pointer"
+                                : "opacity-30 cursor-not-allowed text-slate-300"
+                            }`}
+                            title={
+                              (currentUserRole === "owner" || currentUserRole === "admin")
+                                ? (order.stockDeducted && !order.stockRestored ? "Stok düşülmüş sipariş silinemez (Önce iptal ediniz)" : "Sipariş Kaydını Sil")
+                                : "Yalnızca Yöneticiler silebilir"
+                            }
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>

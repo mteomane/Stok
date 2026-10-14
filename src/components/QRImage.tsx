@@ -6,14 +6,30 @@ interface QRImageProps {
   size?: number;
 }
 
+const qrCache = new Map<string, string>();
+
 export function QRImage({ value, size = 256 }: QRImageProps) {
-  const [src, setSrc] = useState<string>("");
+  const cacheKey = `${value}_${size}`;
+  const [src, setSrc] = useState<string>(() => qrCache.get(cacheKey) || "");
 
   useEffect(() => {
+    if (qrCache.has(cacheKey)) {
+      setSrc(qrCache.get(cacheKey)!);
+      return;
+    }
+
+    let isMounted = true;
     QRCode.toDataURL(value, { width: size, margin: 2 })
-      .then((url) => setSrc(url))
+      .then((url) => {
+        qrCache.set(cacheKey, url);
+        if (isMounted) setSrc(url);
+      })
       .catch((err) => console.error("QR Code generation error:", err));
-  }, [value, size]);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [value, size, cacheKey]);
 
   return src ? (
     <img

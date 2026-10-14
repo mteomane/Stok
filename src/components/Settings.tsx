@@ -14,19 +14,36 @@ import {
   Share2, 
   CloudLightning,
   Coins,
-  Check
+  Check,
+  Package,
+  Scissors,
+  Wrench,
+  Apple,
+  Store,
+  CreditCard,
+  Download
 } from "lucide-react";
 import { SectorField, SectorSettings } from "../types";
 import { CompanyInfo } from "./CompanyInfo";
+import { DataExport } from "./DataExport";
 import { auth } from "../lib/firebase";
 import { getSectorSettings, saveSectorSettings } from "../lib/firestoreService";
+import { SECTOR_PROFILES, getSectorProfile } from "../lib/sectorConfig";
 
 interface SettingsProps {
   onRefreshSectorSettings?: () => void;
+  onOpenSubscriptionModal?: () => void;
+  companyName?: string;
+  tenantId?: string;
 }
 
-export function Settings({ onRefreshSectorSettings }: SettingsProps) {
-  const [subTab, setSubTab] = useState<"dynamic" | "company">("dynamic");
+export function Settings({ 
+  onRefreshSectorSettings, 
+  onOpenSubscriptionModal,
+  companyName,
+  tenantId
+}: SettingsProps) {
+  const [subTab, setSubTab] = useState<"dynamic" | "company" | "export">("dynamic");
   const [activeSector, setActiveSector] = useState("genel");
   const [customFields, setCustomFields] = useState<SectorField[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -37,40 +54,7 @@ export function Settings({ onRefreshSectorSettings }: SettingsProps) {
   const [newFieldName, setNewFieldName] = useState("");
   const [newFieldType, setNewFieldType] = useState<"text" | "number" | "date">("text");
 
-  // Sector Preset Fields definitions
-  const sectorPresets: Record<string, { label: string; fields: SectorField[] }> = {
-    tekstil: {
-      label: "Tekstil & Giyim Sektörü",
-      fields: [
-        { key: "Renk", label: "Renk / Varyasyon", type: "text", required: false },
-        { key: "En", label: "Kumaş Eni (cm)", type: "text", required: false },
-        { key: "Malzeme", label: "Malzeme Tipi (%Pamuk, %Saten)", type: "text", required: false }
-      ]
-    },
-    gida: {
-      label: "Gıda & Hızlı Tüketim (Market/Kafeterya)",
-      fields: [
-        { key: "SKT", label: "Son Tüketim Tarihi", type: "date", required: false },
-        { key: "Gramaj", label: "Gramaj / Hacim (gr/lt)", type: "text", required: false },
-        { key: "Marka", label: "Üretici Marka", type: "text", required: false }
-      ]
-    },
-    yedek_parca: {
-      label: "Otomotiv / Teknik Yedek Parça",
-      fields: [
-        { key: "SeriNo", label: "Seri No / Parça Kodu", type: "text", required: false },
-        { key: "UyumluModel", label: "Araç / Cihaz Uyumluluğu", type: "text", required: false },
-        { key: "RafNo", label: "Raf / Depo Konumu", type: "text", required: false }
-      ]
-    },
-    genel: {
-      label: "Genel Perakende & Diğer Sektörler",
-      fields: [
-        { key: "Marka", label: "Marka", type: "text", required: false },
-        { key: "RafNo", label: "Raf Numarası", type: "text", required: false }
-      ]
-    }
-  };
+  const sectorPresets = SECTOR_PROFILES;
 
   const fetchSettings = async () => {
     try {
@@ -175,11 +159,36 @@ export function Settings({ onRefreshSectorSettings }: SettingsProps) {
             >
               Firma Bilgileri & Logo
             </button>
+            <button
+              onClick={() => setSubTab("export")}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                subTab === "export"
+                  ? "bg-white text-emerald-700 shadow-sm"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Veri Dışa Aktar & Yedek</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenSubscriptionModal) {
+                  onOpenSubscriptionModal();
+                }
+              }}
+              className="px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5 cursor-pointer bg-indigo-50/70 hover:bg-indigo-100/70 border border-indigo-200/50"
+            >
+              <CreditCard className="w-3.5 h-3.5" />
+              <span>Abonelik & Planlar</span>
+            </button>
           </div>
         </div>
       </div>
 
-      {subTab === "company" ? (
+      {subTab === "export" ? (
+        <DataExport companyName={companyName} tenantId={tenantId} />
+      ) : subTab === "company" ? (
         <CompanyInfo />
       ) : isLoading ? (
         <div className="py-12 flex flex-col items-center justify-center space-y-2 bg-white rounded-xl border border-slate-200 shadow-sm">
@@ -211,22 +220,61 @@ export function Settings({ onRefreshSectorSettings }: SettingsProps) {
                   <Layers className="w-4.5 h-4.5 text-indigo-500" />
                   Sektör Şablonu Seçin
                 </h3>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {Object.entries(sectorPresets).map(([key, data]) => {
                     const isSelected = activeSector === key;
+                    const IconComponent = 
+                      key === "tekstil" ? Scissors :
+                      key === "gida" ? Apple :
+                      key === "yedek_parca" ? Wrench : Store;
+
                     return (
                       <button
                         key={key}
                         type="button"
                         onClick={() => handleApplyPreset(key)}
-                        className={`p-3 text-left border rounded-lg text-xs font-semibold flex items-center justify-between transition-all ${
+                        className={`p-3.5 text-left border rounded-xl text-xs font-semibold flex flex-col justify-between transition-all cursor-pointer ${
                           isSelected
-                            ? "bg-indigo-600/10 text-indigo-600 border-indigo-500 shadow-sm"
-                            : "bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200"
+                            ? "bg-indigo-50/70 border-indigo-500 ring-2 ring-indigo-500/20 shadow-sm"
+                            : "bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200"
                         }`}
                       >
-                        <span>{data.label}</span>
-                        {isSelected && <Check className="w-4 h-4" />}
+                        <div className="flex items-start justify-between w-full">
+                          <div className="flex items-center gap-2">
+                            <div className={`p-1.5 rounded-lg ${isSelected ? "bg-indigo-600 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>
+                              <IconComponent className="w-4 h-4" />
+                            </div>
+                            <span className="font-bold text-slate-800 text-sm">{data.name}</span>
+                          </div>
+                          {isSelected && (
+                            <span className="p-1 bg-indigo-600 text-white rounded-full">
+                              <Check className="w-3 h-3" />
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-500 font-normal mt-2 leading-relaxed">
+                          {data.description}
+                        </p>
+                        <div className="flex items-center gap-2 mt-3 pt-2 border-t border-slate-200/60 text-[10px]">
+                          <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200 text-slate-600 font-bold">
+                            Birim: {data.defaultUnit}
+                          </span>
+                          {data.supportsRolls && (
+                            <span className="bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-bold">
+                              Kumaş Topu / Metraj
+                            </span>
+                          )}
+                          {key === "gida" && (
+                            <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-bold">
+                              SKT & Parti / Lot
+                            </span>
+                          )}
+                          {key === "yedek_parca" && (
+                            <span className="bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded font-bold">
+                              OEM & Araç Uyumu
+                            </span>
+                          )}
+                        </div>
                       </button>
                     );
                   })}

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Product, CartItem, Customer } from "../types";
 import { auth } from "../lib/firebase";
-import { getCustomers } from "../lib/firestoreService";
+import { getCustomers, roundQty } from "../lib/firestoreService";
 import { 
   ShoppingCart, 
   Search, 
@@ -15,12 +15,19 @@ import {
   User,
   DollarSign,
   Scissors,
-  Layers
+  Layers,
+  Loader2
 } from "lucide-react";
 
 interface QuickSaleProps {
   products: Product[];
-  onRecordSale: (items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number }[], customerId?: string, amountPaid?: number) => Promise<void>;
+  onRecordSale: (
+    items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number }[], 
+    customerId?: string, 
+    amountPaid?: number,
+    idempotencyKey?: string,
+    paymentMethod?: string
+  ) => Promise<void>;
 }
 
 export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
@@ -30,6 +37,8 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
   const [quantity, setQuantity] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [currentIdempotencyKey, setCurrentIdempotencyKey] = useState<string | null>(null);
 
   // Roll selection states
   const [selectedRollId, setSelectedRollId] = useState<string>("");
@@ -39,6 +48,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>("");
   const [amountPaid, setAmountPaid] = useState<string>("");
+  const [paymentMethod, setPaymentMethod] = useState<string>("nakit");
   const [isCrmLoading, setIsCrmLoading] = useState(false);
 
   // Load customers for checkout selection
@@ -63,16 +73,22 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
   // Filter products for suggestions dropdown
   const suggestions = products.filter((p) => {
     if (!search) return false;
+    const term = search.toLowerCase();
     return (
-      p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase())
+      p.name.toLowerCase().includes(term) || 
+      (p.sku && p.sku.toLowerCase().includes(term)) ||
+      (p.barcode && p.barcode.toLowerCase().includes(term)) ||
+      (p.brand && p.brand.toLowerCase().includes(term)) ||
+      p.id.toLowerCase().includes(term)
     );
   });
 
   const addToCart = (product: Product, qty: number) => {
     setError(null);
     setSuccess(false);
+    setCurrentIdempotencyKey(null);
 
-    const isFabric = product.category?.toLowerCase() === "kumaş" || product.category?.toLowerCase() === "kumas";
+    const isFabric = product.category?.toLowerCase() === "kumaş" || product.category?.toLowerCase() === "kumas" || (product.rolls && product.rolls.length > 0);
     const finalRollId = isFabric && selectedRollId ? selectedRollId : undefined;
     const finalCutLength = isFabric && cutLength ? parseFloat(cutLength) : undefined;
 
@@ -104,7 +120,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
       const updatedCart = [...cart];
       
       if (finalCutLength) {
-        const newCutLen = (updatedCart[existingIndex].cutLength || 0) + finalCutLength;
+        const newCutLen = roundQty((updatedCart[existingIndex].cutLength || 0) + finalCutLength);
         // Check if exceeds roll stock
         if (finalRollId) {
           const selectedRoll = product.rolls?.find(r => r.id === finalRollId);
@@ -114,13 +130,14 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
           }
         }
         updatedCart[existingIndex].cutLength = newCutLen;
-        updatedCart[existingIndex].quantity = Math.ceil(newCutLen);
+        updatedCart[existingIndex].quantity = newCutLen;
       } else {
-        if (product.stock < currentQtyInCart + qty) {
+        const newQty = roundQty(currentQtyInCart + qty);
+        if (product.stock < newQty) {
           setError(`Stok limiti aşılıyor! Maksimum: ${product.stock}`);
           return;
         }
-        updatedCart[existingIndex].quantity += qty;
+        updatedCart[existingIndex].quantity = newQty;
       }
       setCart(updatedCart);
     } else {
@@ -128,9 +145,9 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
         ...cart,
         {
           product,
-          quantity: finalCutLength ? Math.ceil(finalCutLength) : qty,
+          quantity: finalCutLength !== undefined ? roundQty(finalCutLength) : roundQty(qty),
           selectedRollId: finalRollId,
-          cutLength: finalCutLength
+          cutLength: finalCutLength !== undefined ? roundQty(finalCutLength) : undefined
         }
       ]);
     }
@@ -145,23 +162,26 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
 
   const updateCartQuantity = (productId: string, newQty: number) => {
     setError(null);
+    setCurrentIdempotencyKey(null);
     const cartItem = cart.find((item) => item.product.id === productId);
     if (!cartItem) return;
 
-    if (newQty <= 0) {
+    const roundedQty = roundQty(newQty);
+    if (roundedQty <= 0) {
       removeFromCart(productId);
       return;
     }
 
-    if (cartItem.product.stock < newQty) {
+    if (cartItem.product.stock < roundedQty) {
       setError(`${cartItem.product.name} için stok yetersiz! Maksimum stok: ${cartItem.product.stock}`);
       return;
     }
 
-    setCart(cart.map((item) => (item.product.id === productId ? { ...item, quantity: newQty } : item)));
+    setCart(cart.map((item) => (item.product.id === productId ? { ...item, quantity: roundedQty } : item)));
   };
 
   const removeFromCart = (productId: string, rollId?: string) => {
+    setCurrentIdempotencyKey(null);
     setCart(cart.filter((item) => !(item.product.id === productId && item.selectedRollId === rollId)));
   };
 
@@ -179,6 +199,10 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
     setError(null);
     setSuccess(false);
 
+    if (isSubmitting) {
+      return;
+    }
+
     if (cart.length === 0) {
       setError("Sepetiniz boş.");
       return;
@@ -195,10 +219,18 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
       return;
     }
 
+    // Generate or retain idempotency key for this checkout session
+    const activeKey = currentIdempotencyKey || `sale_${Date.now()}_${crypto.randomUUID().replace(/-/g, "").substring(0, 12)}`;
+    if (!currentIdempotencyKey) {
+      setCurrentIdempotencyKey(activeKey);
+    }
+
+    setIsSubmitting(true);
+
     try {
       const itemsPayload = cart.map((item) => ({
         productId: item.product.id,
-        quantity: item.quantity,
+        quantity: item.cutLength !== undefined ? item.cutLength : item.quantity,
         selectedRollId: item.selectedRollId,
         cutLength: item.cutLength,
       }));
@@ -206,16 +238,23 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
       await onRecordSale(
         itemsPayload, 
         selectedCustomerId || undefined, 
-        paidVal
+        paidVal,
+        activeKey,
+        paymentMethod
       );
       
       setCart([]);
       setSelectedCustomerId("");
       setAmountPaid("");
+      setPaymentMethod("nakit");
+      setCurrentIdempotencyKey(null);
       setSuccess(true);
       setTimeout(() => setSuccess(false), 5000);
     } catch (err: any) {
       setError(err.message || "Satış tamamlanamadı.");
+      // Keep currentIdempotencyKey so subsequent retry uses the exact same key!
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -288,12 +327,14 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                 </div>
                 <div className="text-right">
                   <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">Mevcut Stok</span>
-                  <span className="text-base font-bold text-slate-800 block">{selectedProduct.stock} Adet</span>
+                  <span className="text-base font-bold text-slate-800 block">
+                    {selectedProduct.stock} {selectedProduct.unit || (selectedProduct.category?.toLowerCase().includes("kumaş") || selectedProduct.category?.toLowerCase().includes("kumas") ? "Metre" : "Adet")}
+                  </span>
                 </div>
               </div>
 
               {/* Roll selection for Fabric products */}
-              {(selectedProduct.category?.toLowerCase() === "kumaş" || selectedProduct.category?.toLowerCase() === "kumas") && (
+              {((selectedProduct.category?.toLowerCase() === "kumaş" || selectedProduct.category?.toLowerCase() === "kumas") || (selectedProduct.rolls && selectedProduct.rolls.length > 0)) && (
                 <div className="bg-white p-3 rounded-xl border border-slate-200 space-y-3 text-xs">
                   <span className="font-bold text-slate-700 block flex items-center gap-1 border-b border-slate-100 pb-1.5">
                     <Scissors className="w-3.5 h-3.5 text-indigo-500" />
@@ -361,23 +402,56 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
               {/* Only show standard quantity if NOT fabric or if no custom cutLength is active */}
               {!(selectedProduct.category?.toLowerCase() === "kumaş" || selectedProduct.category?.toLowerCase() === "kumas") && (
                 <div>
-                  <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">Satış Miktarı</label>
-                  <div className="flex items-center bg-white border border-slate-200 rounded-lg p-1 max-w-[120px]">
-                    <button
-                      type="button"
-                      onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                      className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 active:scale-90 transition-all"
-                    >
-                      <Minus className="w-3.5 h-3.5" />
-                    </button>
-                    <span className="flex-1 text-sm font-bold text-slate-700 text-center">{quantity}</span>
-                    <button
-                      type="button"
-                      onClick={() => setQuantity(Math.min(selectedProduct.stock, quantity + 1))}
-                      className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 active:scale-90 transition-all"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
+                  <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                    Satış Miktarı {selectedProduct.unit ? `(${selectedProduct.unit})` : ""}
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center bg-white border border-slate-200 rounded-lg p-1 max-w-[130px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const step = (selectedProduct.unit?.toLowerCase() === "kg" || selectedProduct.unit?.toLowerCase() === "litre") ? 0.5 : 1;
+                          setQuantity(Math.max(step, roundQty(quantity - step)));
+                        }}
+                        className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 active:scale-90 transition-all cursor-pointer"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0.001"
+                        max={selectedProduct.stock}
+                        value={quantity}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!isNaN(val) && val > 0) {
+                            setQuantity(val);
+                          } else if (e.target.value === "") {
+                            setQuantity(0 as any);
+                          }
+                        }}
+                        onBlur={() => {
+                          if (!quantity || quantity <= 0) setQuantity(1);
+                        }}
+                        className="flex-1 text-sm font-bold text-slate-700 text-center w-14 bg-transparent outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const step = (selectedProduct.unit?.toLowerCase() === "kg" || selectedProduct.unit?.toLowerCase() === "litre") ? 0.5 : 1;
+                          setQuantity(Math.min(selectedProduct.stock, roundQty(quantity + step)));
+                        }}
+                        className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 active:scale-90 transition-all cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    {selectedProduct.unit && (
+                      <span className="text-xs font-semibold text-slate-500">
+                        {selectedProduct.unit}
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
@@ -470,17 +544,34 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                         <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg p-0.5">
                           <button
                             type="button"
-                            onClick={() => updateCartQuantity(item.product.id, item.quantity - 1)}
+                            onClick={() => {
+                              const step = (item.product.unit?.toLowerCase() === "kg" || item.product.unit?.toLowerCase() === "litre") ? 0.5 : 1;
+                              updateCartQuantity(item.product.id, roundQty(item.quantity - step));
+                            }}
                             className="p-1 rounded-md hover:bg-white text-slate-500 active:scale-90 transition-all cursor-pointer"
                           >
                             <Minus className="w-3.5 h-3.5" />
                           </button>
-                          <span className="px-2 text-xs font-bold text-slate-700 min-w-[16px] text-center">
-                            {item.quantity}
-                          </span>
+                          <input
+                            type="number"
+                            step="any"
+                            min="0.001"
+                            max={item.product.stock}
+                            value={item.quantity}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              if (!isNaN(val) && val > 0) {
+                                updateCartQuantity(item.product.id, val);
+                              }
+                            }}
+                            className="w-12 text-xs font-bold text-slate-700 text-center bg-transparent outline-none p-0"
+                          />
                           <button
                             type="button"
-                            onClick={() => updateCartQuantity(item.product.id, item.quantity + 1)}
+                            onClick={() => {
+                              const step = (item.product.unit?.toLowerCase() === "kg" || item.product.unit?.toLowerCase() === "litre") ? 0.5 : 1;
+                              updateCartQuantity(item.product.id, roundQty(item.quantity + step));
+                            }}
                             className="p-1 rounded-md hover:bg-white text-slate-500 active:scale-90 transition-all cursor-pointer"
                           >
                             <Plus className="w-3.5 h-3.5" />
@@ -510,7 +601,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
 
           {/* CRM Account Association Section */}
           {cart.length > 0 && (
-            <div className="p-4 bg-slate-50 border-t border-b border-slate-100 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-4 bg-slate-50 border-t border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-xs font-bold text-slate-500 block mb-1 flex items-center gap-1">
                   <User className="w-3.5 h-3.5 text-indigo-500" />
@@ -530,6 +621,27 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                 </select>
                 <span className="text-[10px] text-slate-400 mt-0.5 block">
                   Veresiye borçlandırmak için sistemden bir müşteri seçmelisiniz.
+                </span>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-500 block mb-1 flex items-center gap-1">
+                  <CreditCard className="w-3.5 h-3.5 text-indigo-500" />
+                  Ödeme Yöntemi
+                </label>
+                <select
+                  value={paymentMethod}
+                  onChange={(e) => setPaymentMethod(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none"
+                >
+                  <option value="nakit">Nakit</option>
+                  <option value="kredi_karti">Kredi Kartı</option>
+                  <option value="havale">Havale / EFT</option>
+                  <option value="cek">Çek</option>
+                  <option value="diger">Diğer</option>
+                </select>
+                <span className="text-[10px] text-slate-400 mt-0.5 block">
+                  Tahsilat defterine işlenecek kasa/hesap türü.
                 </span>
               </div>
 
@@ -570,14 +682,21 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
 
             <button
               onClick={handleCheckout}
-              disabled={cart.length === 0}
-              className={`w-full sm:w-auto px-8 py-3 rounded-lg font-bold text-sm transition-all shadow-md active:scale-95 ${
-                cart.length === 0
+              disabled={cart.length === 0 || isSubmitting}
+              className={`w-full sm:w-auto px-8 py-3 rounded-lg font-bold text-sm transition-all shadow-md flex items-center justify-center gap-2 ${
+                cart.length === 0 || isSubmitting
                   ? "bg-slate-200 text-slate-400 cursor-not-allowed shadow-none"
-                  : "bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-100"
+                  : "bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-100 active:scale-95"
               }`}
             >
-              Satışı Tamamla
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-500" />
+                  <span>İşleniyor...</span>
+                </>
+              ) : (
+                <span>Satışı Tamamla</span>
+              )}
             </button>
           </div>
         </div>

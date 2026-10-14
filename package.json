@@ -7,9 +7,16 @@
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-stok-satis-test \"npx tsx scripts/test_firestore_rules.ts\"",
+    "test:integration": "firebase emulators:exec --only firestore --project demo-stok-satis-test \"npx tsx scripts/test_firestore_integration.ts\"",
+    "test:repositories": "firebase emulators:exec --only firestore --project demo-stok-satis-test \"npx tsx scripts/test_production_repositories.ts\"",
+    "test:backup": "tsx scripts/test_backup_security.ts",
+    "test:cloud_backup": "tsx scripts/test_cloud_backup.ts",
+    "test:emulator": "firebase emulators:exec --only firestore --project demo-stok-satis-test \"npx tsx scripts/test_firestore_rules.ts && npx tsx scripts/test_firestore_integration.ts && npx tsx scripts/test_production_repositories.ts\""
   },
   "dependencies": {
+    "@google-cloud/storage": "^8.4.0",
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
@@ -22,9 +29,11 @@
     "qrcode": "^1.5.4",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^6.0.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/qrcode": "^1.5.6",

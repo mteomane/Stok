@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Sale, Product } from "../types";
 import {
   Receipt,
@@ -14,10 +14,14 @@ import {
   TrendingUp,
   ShoppingBag,
   RefreshCw,
-  Clock
+  Clock,
+  Download
 } from "lucide-react";
+import { auth } from "../lib/firebase";
 import { ReceiptPrintModal } from "./ReceiptPrintModal";
 import { SalesReportModal } from "./SalesReportModal";
+import { exportService } from "../lib/export/ExportService";
+import { triggerFileDownload } from "../lib/export/fileDownload";
 
 interface HistoryProps {
   sales: Sale[];
@@ -36,6 +40,23 @@ export function History({ sales, products }: HistoryProps) {
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [debouncedQuery, setDebouncedQuery] = useState<string>("");
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(20);
+  const [isExporting, setIsExporting] = useState<boolean>(false);
+
+  // Debounce search query
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQuery(searchQuery);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Reset pagination on filter change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedQuery, datePreset, startDate, endDate, pageSize]);
 
   // Handle Preset Changes
   const handlePresetChange = (preset: DatePreset) => {
@@ -108,8 +129,8 @@ export function History({ sales, products }: HistoryProps) {
         }
 
         // Search Query Filtering
-        if (searchQuery.trim()) {
-          const q = searchQuery.toLowerCase().trim();
+        if (debouncedQuery.trim()) {
+          const q = debouncedQuery.toLowerCase().trim();
           const matchId = sale.id.toLowerCase().includes(q);
           const matchCustomer = sale.customerName?.toLowerCase().includes(q);
           const matchProducts = sale.items.some((it) => {
@@ -127,7 +148,13 @@ export function History({ sales, products }: HistoryProps) {
         return true;
       })
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [sales, products, startDate, endDate, searchQuery]);
+  }, [sales, products, startDate, endDate, debouncedQuery]);
+
+  const totalPages = Math.ceil(filteredSales.length / pageSize) || 1;
+  const paginatedSales = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredSales.slice(start, start + pageSize);
+  }, [filteredSales, currentPage, pageSize]);
 
   // KPI Calculations
   const totalFilteredRevenue = useMemo(
@@ -193,15 +220,39 @@ export function History({ sales, products }: HistoryProps) {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsReportModalOpen(true)}
-          disabled={filteredSales.length === 0}
-          className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold text-xs rounded-xl shadow-md shadow-indigo-100 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 flex-shrink-0"
-        >
-          <Printer className="w-4 h-4" />
-          <span>Tarih Aralıklı PDF Rapor Al</span>
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            disabled={isExporting || sales.length === 0}
+            onClick={async () => {
+              try {
+                setIsExporting(true);
+                const uid = auth.currentUser?.uid || "demo-user";
+                const result = await exportService.exportSales(uid, "csv");
+                triggerFileDownload(result.content, result.fileName, result.mimeType);
+              } catch (err: any) {
+                alert(err.message || "Dışa aktarma sırasında hata oluştu.");
+              } finally {
+                setIsExporting(false);
+              }
+            }}
+            className="px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+            title="Tüm satış kayıtlarını Excel uyumlu CSV olarak indir"
+          >
+            <Download className="w-4 h-4 text-purple-600" />
+            <span>{isExporting ? "İndiriliyor..." : "Excel/CSV İndir"}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsReportModalOpen(true)}
+            disabled={filteredSales.length === 0}
+            className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold text-xs rounded-xl shadow-md shadow-indigo-100 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 flex-shrink-0"
+          >
+            <Printer className="w-4 h-4" />
+            <span>Tarih Aralıklı PDF Rapor Al</span>
+          </button>
+        </div>
       </div>
 
       {/* KPI Stats Grid for Filtered Result */}
@@ -357,7 +408,7 @@ export function History({ sales, products }: HistoryProps) {
             </span>
           </div>
 
-          {filteredSales.map((sale) => {
+          {paginatedSales.map((sale) => {
             const isExpanded = expandedSaleId === sale.id;
             const itemsCount = sale.items.reduce((sum, item) => sum + item.quantity, 0);
 
@@ -489,6 +540,50 @@ export function History({ sales, products }: HistoryProps) {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Pagination Controls */}
+      {filteredSales.length > 0 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-sm mt-4">
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <span>Sayfa Başına:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold text-slate-700 focus:outline-none"
+            >
+              <option value={10}>10 Fiş</option>
+              <option value={20}>20 Fiş</option>
+              <option value={50}>50 Fiş</option>
+              <option value={100}>100 Fiş</option>
+            </select>
+            <span className="ml-2">
+              Toplam <strong>{filteredSales.length}</strong> işlemden <strong>{Math.min(filteredSales.length, (currentPage - 1) * pageSize + 1)}-{Math.min(filteredSales.length, currentPage * pageSize)}</strong> arası
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+            >
+              Önceki
+            </button>
+            <span className="text-xs font-bold text-slate-700 px-2">
+              {currentPage} / {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage >= totalPages}
+              className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+            >
+              Sonraki
+            </button>
+          </div>
         </div>
       )}
 

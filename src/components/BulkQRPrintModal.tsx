@@ -273,7 +273,7 @@ export function BulkQRPrintModal({
                             {stockDisplay}
                           </span>
                           <span className="text-[9px] font-mono text-slate-400 bg-slate-100 px-1 rounded flex-shrink-0">
-                            {p.sku}
+                            {p.sku || p.barcode || p.id.slice(0, 8)}
                           </span>
                         </div>
                       </div>
@@ -478,7 +478,7 @@ export function BulkQRPrintModal({
                       {/* QR Code Graphic */}
                       <div className="my-1 flex items-center justify-center">
                         <QRImage 
-                          value={product.sku} 
+                          value={product.sku || product.barcode || product.id} 
                           size={layoutPreset === "2x5" ? 110 : layoutPreset === "4x10" ? 55 : 80} 
                         />
                       </div>
@@ -486,9 +486,16 @@ export function BulkQRPrintModal({
                       {/* Footer Details: Price & SKU */}
                       <div className="w-full pt-1 border-t border-slate-100 space-y-0.5">
                         {showSkuText && (
-                          <span className="text-[9px] font-mono font-bold text-slate-600 block tracking-tight">
-                            {product.sku}
-                          </span>
+                          <div className="text-center">
+                            {product.barcode && (
+                              <span className="text-[8px] font-mono text-slate-400 block truncate">
+                                Barkod: {product.barcode}
+                              </span>
+                            )}
+                            <span className="text-[9px] font-mono font-bold text-slate-600 block tracking-tight truncate">
+                              {product.sku || `ID: ${product.id}`}
+                            </span>
+                          </div>
                         )}
 
                         {showAttributes && product.attributes && Object.keys(product.attributes).length > 0 && (

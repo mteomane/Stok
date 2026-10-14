@@ -3,6 +3,7 @@ import {
   auth, 
   db 
 } from "../lib/firebase";
+import { isDemoAllowed } from "../lib/authGuard";
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword,
@@ -40,6 +41,10 @@ export function Auth({ onSuccess }: AuthProps) {
   const [isLogin, setIsLogin] = useState(true);
 
   const handleDemoLogin = () => {
+    if (!isDemoAllowed()) {
+      setError("Güvenlik Uyarısı: Demo modu yalnızca geliştirme ortamında kullanılabilir. Lütfen gerçek hesabınızla giriş yapın.");
+      return;
+    }
     const demoUser = { uid: "demo-user", email: "demo@stokpro.com", isDemo: true };
     setSuccessMsg("Demo Modu ile giriş yapılıyor...");
     setTimeout(() => {
@@ -448,20 +453,24 @@ export function Auth({ onSuccess }: AuthProps) {
             )}
           </button>
 
-          <div className="relative flex py-2 items-center">
-            <div className="flex-grow border-t border-slate-700"></div>
-            <span className="flex-shrink mx-4 text-slate-500 text-[10px] font-bold uppercase tracking-wider">Veya</span>
-            <div className="flex-grow border-t border-slate-700"></div>
-          </div>
+          {isDemoAllowed() && (
+            <>
+              <div className="relative flex py-2 items-center">
+                <div className="flex-grow border-t border-slate-700"></div>
+                <span className="flex-shrink mx-4 text-slate-500 text-[10px] font-bold uppercase tracking-wider">Geliştirme / Test</span>
+                <div className="flex-grow border-t border-slate-700"></div>
+              </div>
 
-          <button
-            type="button"
-            onClick={handleDemoLogin}
-            className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-600/10"
-          >
-            <Sparkles className="w-4 h-4 text-amber-300" />
-            Çevrimdışı Demo Modu ile Başla (Önerilen)
-          </button>
+              <button
+                type="button"
+                onClick={handleDemoLogin}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-600/10"
+              >
+                <Sparkles className="w-4 h-4 text-amber-300" />
+                Geliştirme Demo Modu ile Başla
+              </button>
+            </>
+          )}
         </form>
       </motion.div>
 

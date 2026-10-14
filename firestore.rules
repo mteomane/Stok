@@ -1,44 +1,280 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ===============================================================
+    // AUTHENTICATION & MULTI-TENANT OWNERSHIP HELPERS
+    // ===============================================================
     
-    // Check if the user is authenticated and matches the owner ID
+    // 1. Is the request authenticated with a valid Firebase Auth token?
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    // 2. Fetch authenticated user's profile
+    function getUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasUserDoc() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    // 3. User's verified tenant ID (falls back to auth.uid for backward compatibility)
+    function getUserTenantId() {
+      return hasUserDoc() ? getUserDoc().tenantId : request.auth.uid;
+    }
+
+    // 4. Is the caller a verified member of this tenant?
+    function isTenantMember(tId) {
+      return isAuthenticated() && (
+        tId == getUserTenantId() ||
+        tId == request.auth.uid
+      );
+    }
+
+    // 5. Is user the owner of the document path/ID (or verified company member)?
     function isOwner(userId) {
-      return request.auth != null && request.auth.uid == userId;
+      return isAuthenticated() && (
+        request.auth.uid == userId ||
+        isTenantMember(userId) ||
+        (request.auth.token.companyId != null && request.auth.token.companyId == userId)
+      );
     }
 
-    // Products Rules
+    // 6. Is the existing document owned by the caller's tenant/account?
+    function isDocOwner() {
+      return isAuthenticated() && (
+        resource == null ||
+        (resource.data.tenantId != null && isTenantMember(resource.data.tenantId)) ||
+        (resource.data.userId == request.auth.uid) ||
+        (request.auth.token.companyId != null && resource.data.userId == request.auth.token.companyId)
+      );
+    }
+
+    // 7. For create: Is the incoming document strictly tied to caller's tenant?
+    // Prevents inserting records on behalf of other tenants.
+    function willBeDocOwner() {
+      return isAuthenticated() && (
+        (request.resource.data.tenantId != null && isTenantMember(request.resource.data.tenantId)) ||
+        (request.resource.data.userId == request.auth.uid) ||
+        (request.auth.token.companyId != null && request.resource.data.userId == request.auth.token.companyId)
+      );
+    }
+
+    // 8. For update: Document must be currently owned by caller AND ownership must NOT be reassigned.
+    function preservesDocOwnership() {
+      return isDocOwner() && (
+        (resource.data.userId == null || request.resource.data.userId == resource.data.userId) &&
+        (resource.data.tenantId == null || request.resource.data.tenantId == resource.data.tenantId)
+      );
+    }
+
+    // ===============================================================
+    // ROLE-BASED ACCESS CONTROL (RBAC) HELPERS (FAZ 13-A5)
+    // Roles: 'owner' | 'admin' | 'staff' | 'cashier'
+    // ===============================================================
+
+    // 9. Is caller an Owner or Admin of their tenant?
+    function isTenantAdminOrOwner() {
+      return isAuthenticated() && (
+        hasUserDoc()
+          ? (getUserDoc().role == 'owner' || getUserDoc().role == 'admin')
+          : (request.auth.uid == getUserTenantId())
+      );
+    }
+
+    // 10. Detects whether an update is attempting a soft-delete (setting isActive to false or populating deletedAt)
+    function isSoftDeleteAttempt() {
+      return (
+        (request.resource.data.isActive == false && (resource.data.isActive == null || resource.data.isActive == true)) ||
+        (request.resource.data.deletedAt != null && resource.data.deletedAt == null)
+      );
+    }
+
+    // ===============================================================
+    // TENANT & USER ROLES (SaaS Multi-Tenancy Core)
+    // ===============================================================
+
+    // Tenants (Companies)
+    match /tenants/{tenantId} {
+      allow read: if isTenantMember(tenantId);
+      allow create: if isAuthenticated() && (request.auth.uid == request.resource.data.ownerUid || tenantId == request.auth.uid);
+      allow update: if isTenantMember(tenantId) && isTenantAdminOrOwner() && (
+        // Protect plan attribute from client-side tampering
+        resource.data.plan == null || request.resource.data.plan == resource.data.plan
+      );
+      allow delete: if false;
+    }
+
+    // Users (Tenant membership profiles & RBAC)
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        (resource.data.tenantId != null && isTenantMember(resource.data.tenantId))
+      );
+      // Prevent unauthorized role self-elevation on document creation
+      allow create: if isAuthenticated() && request.auth.uid == userId && (
+        request.resource.data.tenantId == request.auth.uid ||
+        (request.resource.data.role != 'owner' && request.resource.data.role != 'admin') ||
+        isTenantAdminOrOwner()
+      );
+      allow update: if isAuthenticated() && (
+        (request.auth.uid == userId && request.resource.data.tenantId == resource.data.tenantId && request.resource.data.role == resource.data.role) ||
+        (isTenantMember(resource.data.tenantId) && isTenantAdminOrOwner())
+      );
+      allow delete: if false;
+    }
+
+    // ===============================================================
+    // TENANT COLLECTIONS (Products, Sales, Customers, Orders, etc.)
+    // ===============================================================
+
+    // Products & Fabric Rolls
     match /products/{docId} {
-      allow read, delete: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create, update: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow read: if isDocOwner();
+      allow create: if willBeDocOwner();
+      // Regular updates (e.g. POS stock deduction) allowed for all tenant members;
+      // Soft-delete attempts (isActive: false / deletedAt) strictly restricted to Owner / Admin!
+      allow update: if preservesDocOwnership() && (!isSoftDeleteAttempt() || isTenantAdminOrOwner());
+      // Hard-delete strictly restricted to Owner / Admin!
+      allow delete: if isDocOwner() && isTenantAdminOrOwner();
     }
 
-    // Sales Rules
+    // Sales Logs & Fişler
     match /sales/{docId} {
-      allow read, delete: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create, update: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow read: if isDocOwner();
+      allow create: if willBeDocOwner();
+      // Immutable core financial fields (tenantId, totalAmount, items)
+      // Transitioning status to 'İptal Edildi' strictly requires Tenant Admin / Owner
+      allow update: if preservesDocOwnership() &&
+        (request.resource.data.tenantId == resource.data.tenantId) &&
+        (request.resource.data.totalAmount == resource.data.totalAmount) &&
+        (request.resource.data.items == resource.data.items) &&
+        (
+          request.resource.data.status != 'İptal Edildi' || 
+          resource.data.status == 'İptal Edildi' || 
+          isTenantAdminOrOwner()
+        );
+      // Hard delete blocked if order/sale has un-restored stock deductions
+      allow delete: if isDocOwner() && isTenantAdminOrOwner() && (
+        resource.data.stockDeducted != true || resource.data.stockRestored == true
+      );
     }
 
-    // Customers Rules
+    // Customers & CRM Ledgers
     match /customers/{docId} {
-      allow read, delete: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create, update: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow read: if isDocOwner();
+      allow create: if willBeDocOwner();
+      allow update: if preservesDocOwnership();
+      // Hard delete blocked if customer has active outstanding debt/balance
+      allow delete: if isDocOwner() && isTenantAdminOrOwner() && (
+        !('totalDebt' in resource.data) || resource.data.totalDebt == 0 || resource.data.totalDebt == 0.0
+      );
     }
 
-    // Orders Rules
+    // Orders & Waybills
     match /orders/{docId} {
-      allow read, delete: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create, update: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow read: if isDocOwner();
+      allow create: if willBeDocOwner();
+      // Regular updates allowed for tenant members; transitioning status to 'İptal Edildi' strictly requires Tenant Admin / Owner
+      allow update: if preservesDocOwnership() &&
+        (request.resource.data.tenantId == resource.data.tenantId) &&
+        (
+          request.resource.data.status != 'İptal Edildi' || 
+          resource.data.status == 'İptal Edildi' || 
+          isTenantAdminOrOwner()
+        );
+      // Hard delete strictly restricted to Tenant Admin / Owner AND blocked if order has un-restored stock deductions
+      allow delete: if isDocOwner() && isTenantAdminOrOwner() && (
+        resource.data.stockDeducted != true || resource.data.stockRestored == true
+      );
     }
 
-    // Sector Settings per-user doc
+    // Suppliers (Tedarikçiler)
+    match /suppliers/{docId} {
+      allow read: if isDocOwner();
+      allow create: if willBeDocOwner();
+      allow update: if preservesDocOwnership();
+      allow delete: if isDocOwner() && isTenantAdminOrOwner();
+    }
+
+    // Warehouses (Depolar)
+    match /warehouses/{docId} {
+      allow read: if isDocOwner();
+      allow create: if willBeDocOwner() && isTenantAdminOrOwner();
+      allow update: if preservesDocOwnership() && isTenantAdminOrOwner();
+      allow delete: if isDocOwner() && isTenantAdminOrOwner();
+    }
+
+    // Payments (Tahsilat ve Ödemeler)
+    match /payments/{docId} {
+      allow read: if isDocOwner();
+      allow create: if willBeDocOwner();
+      allow update: if preservesDocOwnership();
+      allow delete: if isDocOwner() && isTenantAdminOrOwner();
+    }
+
+    // Subscriptions (SaaS Abonelik ve Plan Hakları)
+    // CRITICAL SECURITY ENFORCEMENT (FAZ 13-A1):
+    // Subscriptions are strictly READ-ONLY for client SDKs.
+    // Client-side create, update, and delete are completely denied (write: if false).
+    // Plan and payment state mutations can only be made by authorized server-side processes (Firebase Admin SDK).
+    match /subscriptions/{docId} {
+      allow read: if isDocOwner() || (resource.data.tenantId != null && isTenantMember(resource.data.tenantId));
+      allow write: if false;
+    }
+
+    // Webhook Events (Idempotency and Audit Trail)
+    match /webhook_events/{docId} {
+      allow read: if isDocOwner() || (resource.data.tenantId != null && isTenantMember(resource.data.tenantId));
+      allow create: if isAuthenticated();
+      allow update, delete: if false;
+    }
+
+    // Audit Logs (Immutable Append-Only Audit Trail)
+    match /audit_logs/{docId} {
+      allow read: if isDocOwner();
+      allow create: if willBeDocOwner();
+      allow update, delete: if false;
+    }
+
+    // Stock Movements (Depo Stok Hareketleri)
+    match /stock_movements/{docId} {
+      allow read: if isDocOwner();
+      allow create: if willBeDocOwner();
+      allow update, delete: if false;
+    }
+
+    // Backup Metadata (Otomatik Bulut Yedekleme Durum Kayıtları)
+    // Sadece firma sahibi ve adminler kendi şirketlerine ait yedek durumunu okuyabilir.
+    // İstemcilerden yazma/değiştirme kesinlikle yasaktır; sadece sunucu (Admin SDK) yazabilir.
+    match /backup_metadata/{docId} {
+      allow read: if isDocOwner() && isTenantAdminOrOwner();
+      allow write: if false;
+    }
+
+    // ===============================================================
+    // USER / COMPANY SINGLETON DOCUMENTS
+    // ===============================================================
+
+    // Sector Dynamic Settings (keyed by owner UID/Company ID)
     match /settings/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isOwner(userId);
+      allow create, update, delete: if isOwner(userId) && isTenantAdminOrOwner();
     }
 
-    // Company Info per-user doc
+    // Company Profile & Invoice Info (keyed by owner UID/Company ID)
     match /company/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isOwner(userId);
+      allow create, update, delete: if isOwner(userId) && isTenantAdminOrOwner();
+    }
+
+    // ===============================================================
+    // DEFAULT CATCH-ALL (DENY BY DEFAULT)
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
