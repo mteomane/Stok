@@ -9,6 +9,7 @@ import {
   CloudBackupConfig 
 } from "./types";
 import { InMemoryCloudStorageAdapter, createDefaultStorageAdapter } from "./CloudStorageAdapter";
+import { IBackupLockManager, InMemoryLockManager } from "./BackupLockManager";
 
 /**
  * Strict allowlist of business domains permitted in application-level tenant backups.
@@ -22,7 +23,8 @@ export const ALLOWED_BACKUP_COLLECTIONS = [
   "warehouses",
   "orders",
   "payments",
-  "stockMovements"
+  "stockMovements",
+  "stock_movements"
 ] as const;
 
 export const FORBIDDEN_COLLECTIONS = new Set([
@@ -58,20 +60,31 @@ export const DEFAULT_BACKUP_CONFIG: CloudBackupConfig = {
  */
 export class CloudBackupService {
   private storageAdapter: ICloudStorageAdapter;
+  private lockManager: IBackupLockManager;
   private config: CloudBackupConfig;
-  private activeJobs: Set<string> = new Set(); // Concurrency Lock per tenant
+  private activeJobs: Set<string> = new Set(); // Local guard
   private metadataStore: Map<string, BackupJobMetadata> = new Map(); // In-memory metadata / syncable to Firestore
 
   constructor(
     storageAdapter?: ICloudStorageAdapter,
-    config: Partial<CloudBackupConfig> = {}
+    config: Partial<CloudBackupConfig> = {},
+    lockManager?: IBackupLockManager
   ) {
     this.storageAdapter = storageAdapter || createDefaultStorageAdapter();
     this.config = { ...DEFAULT_BACKUP_CONFIG, ...config };
+    this.lockManager = lockManager || new InMemoryLockManager();
   }
 
   setStorageAdapter(adapter: ICloudStorageAdapter): void {
     this.storageAdapter = adapter;
+  }
+
+  setLockManager(manager: IBackupLockManager): void {
+    this.lockManager = manager;
+  }
+
+  getLockManager(): IBackupLockManager {
+    return this.lockManager;
   }
 
   /**
@@ -90,8 +103,14 @@ export class CloudBackupService {
       throw new Error("Geçersiz tenantId: Boş olamaz.");
     }
 
-    // 1. Concurrency Lock: Prevent multiple overlapping backup jobs for the same tenant
+    // 1. Concurrency Lock: Prevent multiple overlapping backup jobs across distributed instances
+    const lockResult = await this.lockManager.acquireLock(tenantId, this.config.timeoutMs);
+    if (!lockResult.acquired) {
+      throw new Error(`Zaten devam eden bir yedekleme işi bulunuyor (Tenant: ${tenantId}). Çakışmayı önlemek için yeni iş başlatılmadı. ${lockResult.reason || ""}`.trim());
+    }
+
     if (this.activeJobs.has(tenantId)) {
+      await this.lockManager.releaseLock(tenantId, lockResult.lockId);
       throw new Error(`Zaten devam eden bir yedekleme işi bulunuyor (Tenant: ${tenantId}). Çakışmayı önlemek için yeni iş başlatılmadı.`);
     }
 
@@ -139,7 +158,10 @@ export class CloudBackupService {
       }
 
       // 4. Filter only allowed collections and enforce tenant isolation
+      // Resolves both Firestore collection name 'stock_movements' and camelCase 'stockMovements'
       const rawCollections = tenantData.collections;
+      const rawMovements = rawCollections.stock_movements || rawCollections.stockMovements || [];
+
       const filteredData: TenantBackupArchive["data"] = {
         products: enforceTenantIsolation(rawCollections.products || [], tenantId, tenantId),
         customers: enforceTenantIsolation(rawCollections.customers || [], tenantId, tenantId),
@@ -148,7 +170,7 @@ export class CloudBackupService {
         warehouses: enforceTenantIsolation(rawCollections.warehouses || [], tenantId, tenantId),
         orders: enforceTenantIsolation(rawCollections.orders || [], tenantId, tenantId),
         payments: enforceTenantIsolation(rawCollections.payments || [], tenantId, tenantId),
-        stockMovements: enforceTenantIsolation(rawCollections.stockMovements || [], tenantId, tenantId)
+        stockMovements: enforceTenantIsolation(rawMovements, tenantId, tenantId)
       };
 
       const itemCounts = {
@@ -222,6 +244,7 @@ export class CloudBackupService {
       jobMeta.errorCode = err.code || "BACKUP_EXECUTION_FAILED";
       return { ...jobMeta };
     } finally {
+      await this.lockManager.releaseLock(tenantId, lockResult.lockId);
       this.activeJobs.delete(tenantId);
     }
   }

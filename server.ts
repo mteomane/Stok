@@ -10,6 +10,7 @@ import {
 } from "./src/lib/payment";
 import { cloudBackupService } from "./src/lib/backup/CloudBackupService";
 import { scheduledBackupRunner } from "./src/lib/backup/ScheduledBackupRunner";
+import { verifyServerTenantAuth } from "./src/lib/backup/serverAuth";
 
 interface PaymentStore {
   subscriptions: Record<string, any>;
@@ -365,23 +366,48 @@ async function startServer() {
     });
   });
 
-  // 2. Tenant Backup History & Status
+  // 2. Tenant Backup History & Status (Secured with Firebase ID Token & Multi-Tenant Role Guard)
   app.get("/api/backup/tenant/:tenantId/history", async (req, res) => {
+    const { tenantId } = req.params;
+
+    // Strict multi-tenant auth guard: caller must belong to requested tenant and have owner/admin role
+    const authCheck = await verifyServerTenantAuth(req.headers.authorization, tenantId, {
+      requiredRole: ["owner", "admin"]
+    });
+
+    if (!authCheck.authorized) {
+      return res.status(authCheck.statusCode || 403).json({
+        error: authCheck.error || "Yetkisiz erişim: Bu işletmenin yedekleme geçmişini görüntüleme yetkiniz bulunmamaktadır."
+      });
+    }
+
     try {
-      const { tenantId } = req.params;
-      const history = await cloudBackupService.getTenantBackupHistory(tenantId);
+      const history = await cloudBackupService.getTenantBackupHistory(authCheck.user!.tenantId);
       res.json(history);
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Yedekleme geçmişi alınamadı." });
     }
   });
 
-  // 3. Trigger Manual/Scheduled Cloud Backup for Tenant
+  // 3. Trigger Manual Cloud Backup for Tenant (Secured with Firebase ID Token & Multi-Tenant Role Guard)
   app.post("/api/backup/tenant/:tenantId/trigger", async (req, res) => {
+    const { tenantId } = req.params;
+
+    // Strict multi-tenant auth guard: caller must belong to requested tenant and have owner/admin role
+    const authCheck = await verifyServerTenantAuth(req.headers.authorization, tenantId, {
+      requiredRole: ["owner", "admin"]
+    });
+
+    if (!authCheck.authorized) {
+      return res.status(authCheck.statusCode || 403).json({
+        error: authCheck.error || "Yetkisiz erişim: Bu işletmenin yedeğini tetikleme yetkiniz bulunmamaktadır."
+      });
+    }
+
     try {
-      const { tenantId } = req.params;
+      const verifiedTenantId = authCheck.user!.tenantId;
       const result = await cloudBackupService.executeTenantBackup(
-        tenantId,
+        verifiedTenantId,
         {
           getTenantData: async (id) => ({
             companyName: req.body.companyName || "İşletme",

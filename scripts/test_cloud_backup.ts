@@ -14,9 +14,21 @@
  */
 
 import { CloudBackupService, TenantDataProvider } from "../src/lib/backup/CloudBackupService";
-import { InMemoryCloudStorageAdapter } from "../src/lib/backup/CloudStorageAdapter";
+import { 
+  InMemoryCloudStorageAdapter, 
+  GoogleCloudStorageAdapter, 
+  createDefaultStorageAdapter 
+} from "../src/lib/backup/CloudStorageAdapter";
+import { InMemoryLockManager } from "../src/lib/backup/BackupLockManager";
+import { ScheduledBackupRunner } from "../src/lib/backup/ScheduledBackupRunner";
+import { verifyServerTenantAuth } from "../src/lib/backup/serverAuth";
 import { exportService } from "../src/lib/export/ExportService";
 import { verifyBackupChecksum } from "../src/lib/export/backupCrypto";
+import fs from "fs";
+import path from "path";
+import { createRequire } from "module";
+
+const cjsRequire = createRequire(import.meta.url);
 
 let passedCount = 0;
 let failedCount = 0;
@@ -295,6 +307,264 @@ async function runCloudBackupTests() {
     }
   }
   assert(crossAccessCaught, "Tenant B, Tenant A'ya ait bulut nesnesini indirememeli ve güvenlik hatası üretilmeli");
+
+  // -------------------------------------------------------------------
+  // TEST 10: Gerçek Google Cloud Storage Adaptörü (Mock Storage & Güvenlik Doğrulaması)
+  // -------------------------------------------------------------------
+  console.log("\nTEST 10: GoogleCloudStorageAdapter Yapılandırma ve Üretim Hata Koruması");
+
+  // A. Üretim ortamında BACKUP_BUCKET yoksa sessiz fallback engellenmeli
+  const prevEnv = process.env.NODE_ENV;
+  const prevBucket = process.env.BACKUP_BUCKET;
+  let prodErrorCaught = false;
+
+  try {
+    process.env.NODE_ENV = "production";
+    delete process.env.BACKUP_BUCKET;
+    delete process.env.GCS_BACKUP_BUCKET;
+    new GoogleCloudStorageAdapter({ bucketName: "" });
+  } catch (err: any) {
+    if (err.message.includes("BACKUP_BUCKET ortam değişkeni zorunludur")) {
+      prodErrorCaught = true;
+    }
+  } finally {
+    process.env.NODE_ENV = prevEnv;
+    if (prevBucket) process.env.BACKUP_BUCKET = prevBucket;
+  }
+  assert(prodErrorCaught, "Üretim modunda BACKUP_BUCKET olmadan sessizce belleğe düşme engellenmeli ve açık hata fırlatılmalı");
+
+  // B. Mock Storage istemcisi ile GCS adaptörünün upload, download, list ve delete döngüsü
+  const mockGcsFiles: Map<string, { content: string; metadata: any }> = new Map();
+  const mockGcsClient: any = {
+    bucket(bName: string) {
+      return {
+        file(filePath: string) {
+          return {
+            name: filePath,
+            async save(content: string, options: any) {
+              mockGcsFiles.set(filePath, {
+                content,
+                metadata: options?.metadata || {}
+              });
+            },
+            async exists() {
+              return [mockGcsFiles.has(filePath)];
+            },
+            async download() {
+              const item = mockGcsFiles.get(filePath);
+              if (!item) throw new Error("File not found");
+              return [Buffer.from(item.content, "utf-8")];
+            },
+            async getMetadata() {
+              const item = mockGcsFiles.get(filePath);
+              return [{
+                size: item ? item.content.length : 0,
+                timeCreated: new Date().toISOString(),
+                metadata: item?.metadata?.metadata || {}
+              }];
+            },
+            async delete() {
+              mockGcsFiles.delete(filePath);
+            }
+          };
+        },
+        async getFiles(opts: any) {
+          const files: any[] = [];
+          for (const [p, item] of mockGcsFiles.entries()) {
+            if (p.startsWith(opts.prefix)) {
+              files.push({
+                name: p,
+                getMetadata: async () => [{
+                  size: item.content.length,
+                  timeCreated: new Date().toISOString(),
+                  metadata: item.metadata?.metadata || {}
+                }]
+              });
+            }
+          }
+          return [files];
+        }
+      };
+    }
+  };
+
+  const gcsAdapter = new GoogleCloudStorageAdapter({
+    bucketName: "stokpro-production-secure-backups",
+    storageInstance: mockGcsClient
+  });
+
+  assert(gcsAdapter.getBucketName() === "stokpro-production-secure-backups", "GCS adaptörü tanımlanan bucket adını doğru kullanmalı");
+
+  const gcsUpload = await gcsAdapter.uploadBackup("tenant_gcs_test", "backup_gcs_01.json", '{"test": true}', {
+    checksum: "sha256:abcd1234ef567890",
+    schemaVersion: "2.1.0"
+  });
+
+  assert(gcsUpload.uri.startsWith("gs://stokpro-production-secure-backups/tenants/tenant_gcs_test/"), "GCS URI formatı gs:// standardına uygun olmalı");
+  assert(mockGcsFiles.size === 1, "Mock Cloud Storage bucket'ına 1 adet nesne kaydedilmeli");
+
+  const gcsDownloaded = await gcsAdapter.downloadBackup(gcsUpload.objectPath);
+  assert(gcsDownloaded === '{"test": true}', "GCS adaptörü nesne içeriğini kayıpsız okuyabilmeli");
+
+  const gcsList = await gcsAdapter.listBackups("tenant_gcs_test");
+  assert(gcsList.length === 1, "GCS adaptörü tenant nesnelerini listelemeli");
+  assert(gcsList[0].checksum === "sha256:abcd1234ef567890", "GCS metadata içindeki checksum eksiksiz korunmalı");
+
+  await gcsAdapter.deleteBackup(gcsUpload.objectPath);
+  assert(mockGcsFiles.size === 0, "GCS nesne silme işlemi başarıyla tamamlanmalı");
+
+  // -------------------------------------------------------------------
+  // TEST 11: Dağıtık Kilit Mekanizması (Distributed Lease & Concurrency Lock)
+  // -------------------------------------------------------------------
+  console.log("\nTEST 11: Dağıtık Kilit (Distributed Lease/Lock) ve Süresi Dolan Kilit Devralma");
+  const lockMgr = new InMemoryLockManager();
+
+  // 1. Lock acquisition
+  const lock1 = await lockMgr.acquireLock("tenant_lock_lease", 500); // 500ms lease
+  assert(lock1.acquired === true, "İlk kilit talebi başarıyla alınmalı");
+
+  // 2. Immediate overlapping acquisition should be rejected
+  const lock2 = await lockMgr.acquireLock("tenant_lock_lease", 500);
+  assert(lock2.acquired === false, "Aktif kilit varken ikinci talep reddedilmeli");
+  assert(Boolean(lock2.reason && lock2.reason.includes("aktif bir kilit")), "Kilit çakışma sebebi belirtilmeli");
+
+  // 3. Wait for TTL lease to expire and verify safe takeover
+  await new Promise(r => setTimeout(r, 550));
+  const lock3 = await lockMgr.acquireLock("tenant_lock_lease", 500);
+  assert(lock3.acquired === true, "Süresi dolan (expired lease) kilit güvenli biçimde devralınmalı");
+
+  // 4. Release lock
+  const released = await lockMgr.releaseLock("tenant_lock_lease", lock3.lockId);
+  assert(released === true, "Kilit başarıyla serbest bırakılmalı");
+  const isStillLocked = await lockMgr.isLocked("tenant_lock_lease");
+  assert(isStillLocked === false, "Kilit serbest bırakıldıktan sonra durum false olmalı");
+
+  // -------------------------------------------------------------------
+  // TEST 12: Gerçek Firestore Koleksiyon Adı ('stock_movements') Entegrasyonu
+  // -------------------------------------------------------------------
+  console.log("\nTEST 12: Gerçek Firestore Koleksiyon Adı ('stock_movements') ve İzolasyon");
+  const movementsProvider: TenantDataProvider = {
+    async getTenantData(tId: string) {
+      return {
+        companyName: "Lojistik A.Ş.",
+        collections: {
+          products: [{ id: "pr_mov_1", name: "Koli Bandı", price: 50, tenantId: tId }],
+          // Providing actual Firestore collection name: stock_movements
+          stock_movements: [
+            { id: "sm_01", type: "in", quantity: 100, tenantId: tId },
+            { id: "sm_02", type: "out", quantity: 30, tenantId: tId },
+            // Foreign record that must be pruned by tenant isolation
+            { id: "sm_foreign", type: "in", quantity: 999, tenantId: "other_tenant" }
+          ]
+        }
+      };
+    }
+  };
+
+  const movementsJob = await backupService.executeTenantBackup("tenant_mov_test", movementsProvider);
+  assert(movementsJob.status === "success", "stock_movements koleksiyonuyla yedekleme başarılı olmalı");
+  assert(movementsJob.itemCounts?.stockMovements === 2, "Yabancı tenant kaydı elenmeli ve sadece 2 geçerli hareket yedeklenmeli");
+
+  const movArchive = await backupService.fetchBackupArchiveForRestore("tenant_mov_test", movementsJob.objectPath!);
+  assert(movArchive.data.stockMovements.length === 2, "Arşivdeki stockMovements anahtarı tam 2 kayıt içermeli");
+  assert(movArchive.data.stockMovements.every(m => m.tenantId === "tenant_mov_test"), "Tüm stok hareketlerinin tenantId'si doğrulanmalı");
+
+  // -------------------------------------------------------------------
+  // TEST 13: Cron Uç Noktası Yetkilendirme & Idempotency Güvenliği
+  // -------------------------------------------------------------------
+  console.log("\nTEST 13: Zamanlanmış Cron Yetkilendirme ve Idempotency Kontrolü");
+  const cronRunner = new ScheduledBackupRunner(backupService);
+
+  // 1. Missing auth
+  const unauthorizedCheck = cronRunner.verifyCronAuthorization({});
+  assert(unauthorizedCheck.authorized === false, "Kimlik bilgisi eksik cron talebi reddedilmeli");
+
+  // 2. Invalid token
+  const wrongTokenCheck = cronRunner.verifyCronAuthorization({ authorization: "Bearer invalid_secret_123" });
+  assert(wrongTokenCheck.authorized === false, "Geçersiz secret içeren cron talebi reddedilmeli");
+
+  // 3. Valid secret (dev-internal-cron-secret)
+  const validCheck = cronRunner.verifyCronAuthorization({ authorization: "Bearer dev-internal-cron-secret" });
+  assert(validCheck.authorized === true, "Doğru cron secret ile erişim onaylanmalı");
+
+  // 4. Idempotency run check
+  cronRunner.resetDailyGuardForTesting();
+  const runReport1 = await cronRunner.runScheduledCycle({
+    tenants: ["tenant_cron_1"],
+    dataProviderFactory: () => ({
+      getTenantData: async (id) => ({ companyName: id, collections: { products: [] } })
+    })
+  });
+  assert(runReport1.status === "completed", "İlk cron döngüsü 'completed' olmalı");
+
+  // Second run on same day without force -> skipped
+  const runReport2 = await cronRunner.runScheduledCycle({
+    tenants: ["tenant_cron_1"]
+  });
+  assert(runReport2.status === "skipped_already_run_today", "Aynı gün içinde ikinci çağrı mükerrer çalışmayı önlemek için atlanmalı (Idempotent)");
+
+  // Run with force=true -> allowed
+  const runReport3 = await cronRunner.runScheduledCycle({
+    tenants: ["tenant_cron_1"],
+    force: true,
+    dataProviderFactory: () => ({
+      getTenantData: async (id) => ({ companyName: id, collections: { products: [] } })
+    })
+  });
+  assert(runReport3.status === "completed", "'force: true' ile çağrıldığında yeniden çalışma onaylanmalı");
+
+  // -------------------------------------------------------------------
+  // TEST 14: Server-Side Tenant Yetkilendirme Guard'ı (verifyServerTenantAuth)
+  // -------------------------------------------------------------------
+  console.log("\nTEST 14: Server-Side Tenant Yetkilendirme ve Çapraz İşletme Engeli");
+
+  // Missing header
+  const noHeaderAuth = await verifyServerTenantAuth(undefined, "tenant_alpha_ltd");
+  assert(noHeaderAuth.authorized === false && noHeaderAuth.statusCode === 401, "Auth başlığı yoksa 401 Unauthorized dönmeli");
+
+  // Tenant Alpha admin accessing Tenant Alpha -> Success
+  const alphaOkAuth = await verifyServerTenantAuth("Bearer test_token_tenant_alpha_admin", "tenant_alpha_ltd");
+  assert(alphaOkAuth.authorized === true, "Tenant Alpha admin kendi işletmesine erişebilmeli");
+
+  // Tenant Alpha admin accessing Tenant Beta -> 403 Forbidden (Cross-tenant violation)
+  const crossTenantAuth = await verifyServerTenantAuth("Bearer test_token_tenant_alpha_admin", "tenant_beta_as");
+  assert(crossTenantAuth.authorized === false && crossTenantAuth.statusCode === 403, "Başka bir firmanın tenantId'sine erişim 403 ile engellenmeli");
+
+  // Tenant Alpha staff role attempting backup -> 403 Forbidden (Role restriction)
+  const staffAuth = await verifyServerTenantAuth("Bearer test_token_tenant_alpha_staff", "tenant_alpha_ltd", {
+    requiredRole: ["owner", "admin"]
+  });
+  assert(staffAuth.authorized === false && staffAuth.statusCode === 403, "Yönetici olmayan (staff/cashier) kullanıcıların yedekleme erişimi 403 ile engellenmeli");
+
+  // -------------------------------------------------------------------
+  // TEST 15: Dağıtılabilir Firebase Functions 2nd Gen Doğrulaması
+  // -------------------------------------------------------------------
+  console.log("\nTEST 15: Dağıtılabilir Firebase Functions 2nd Gen Giriş Noktası Doğrulaması");
+  const functionsDistPath = path.join(process.cwd(), "functions", "lib", "index.js");
+  const functionsDistExists = fs.existsSync(functionsDistPath);
+  assert(functionsDistExists, "functions/lib/index.js derlenmiş JavaScript dosyası mevcut olmalı");
+
+  if (functionsDistExists) {
+    const functionsCode = fs.readFileSync(functionsDistPath, "utf-8");
+    assert(functionsCode.includes("scheduledTenantDailyBackup"), "functions/lib/index.js 'scheduledTenantDailyBackup' fonksiyonunu dışa aktarmalı");
+    assert(functionsCode.includes("0 2 * * *"), "Fonksiyon zamanlaması '0 2 * * *' (02:00) olmalı");
+    assert(functionsCode.includes("Europe/Istanbul"), "Zaman dilimi 'Europe/Istanbul' olmalı");
+
+    // Verify no hazardous external relative imports like require("../../src/...") exist in distribution
+    const hasExternalSrcRequire = functionsCode.includes('require("../../src') || functionsCode.includes('require("../src');
+    assert(hasExternalSrcRequire === false, "functions/lib/index.js dağıtım paketi dışındaki '../src' yollarına bağımlı olmamalı (Tamamen self-contained)");
+
+    // Isolated runtime require smoke test
+    let smokeExported = false;
+    try {
+      delete cjsRequire.cache[cjsRequire.resolve(functionsDistPath)];
+      const importedModule = cjsRequire(functionsDistPath);
+      smokeExported = typeof importedModule.scheduledTenantDailyBackup === "function" || Boolean(importedModule.scheduledTenantDailyBackup);
+    } catch (e: any) {
+      console.error("Functions smoke test error:", e);
+    }
+    assert(smokeExported, "functions/lib/index.js modülü Node.js çalışma zamanında hatasız import/require edilebilmeli (Smoke Test)");
+  }
 
   console.log("\n=====================================================================");
   console.log(`SONUÇ: ${passedCount} Başarılı, ${failedCount} Başarısız`);

@@ -254,6 +254,13 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Backup Distributed Locks (Dağıtık Eşzamanlılık Kilitleri)
+    // İstemcilerin kilitleri kurcalaması engellenir, sadece güvenli sunucu (Admin SDK) yönetir.
+    match /backup_locks/{docId} {
+      allow read: if isDocOwner() && isTenantAdminOrOwner();
+      allow write: if false;
+    }
+
     // ===============================================================
     // USER / COMPANY SINGLETON DOCUMENTS
     // ===============================================================

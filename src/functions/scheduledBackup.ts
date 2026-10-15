@@ -1,112 +1,89 @@
 /**
- * Firebase Functions (2nd Gen) Scheduled Backup Reference
+ * Firebase Functions (2nd Gen) Scheduled Cloud Backup
  * 
- * Deployment Trigger:
- * Runtime: Node.js 20+
- * Schedule: Every day at 02:00 AM Europe/Istanbul (cron: "0 2 * * *")
- * Security: Runs in isolated VPC/Cloud environment with dedicated service account.
+ * Deployment Specifications:
+ * - Runtime: Node.js 20+
+ * - Schedule: Every day at 02:00 Europe/Istanbul ("0 2 * * *")
+ * - Timezone: Europe/Istanbul
+ * - Memory: 512MiB
+ * - Timeout: 300s (5 minutes)
+ * - Retries: 1 automatic retry on transient infrastructure error
+ * 
+ * Security:
+ * - Runs with Cloud Functions service account credentials (Application Default Credentials).
+ * - Enforces multi-tenant isolation across all Firestore collections.
+ * - Concurrency protected via distributed Firestore lease lock.
  */
 
-export const SCHEDULED_BACKUP_FUNCTION_CODE = `
 import { onSchedule } from "firebase-functions/v2/scheduler";
-import * as admin from "firebase-admin";
-import { CloudBackupService } from "./lib/backup/CloudBackupService";
-import { Storage } from "@google-cloud/storage";
-
-if (!admin.apps.length) {
-  admin.initializeApp();
-}
-
-const db = admin.firestore();
-const storage = new Storage();
-const BUCKET_NAME = process.env.BACKUP_BUCKET_NAME || "stokpro-private-backups";
+import { initializeApp, getApps } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
+import { CloudBackupService } from "../lib/backup/CloudBackupService";
+import { GoogleCloudStorageAdapter } from "../lib/backup/CloudStorageAdapter";
+import { FirestoreBackupLockManager } from "../lib/backup/BackupLockManager";
 
 export const scheduledTenantDailyBackup = onSchedule({
   schedule: "0 2 * * *",
   timeZone: "Europe/Istanbul",
   memory: "512MiB",
   timeoutSeconds: 300,
-  retryCount: 1,
-}, async (event) => {
-  console.log("Starting scheduled daily tenant backup job at:", new Date().toISOString());
+  retryCount: 1
+}, async () => {
+  console.log(`[ScheduledBackup] Günlük otomatik yedekleme başlatıldı: ${new Date().toISOString()}`);
 
-  // 1. Fetch active tenants
+  if (!getApps().length) {
+    initializeApp();
+  }
+
+  const db = getFirestore();
+  const bucketName = process.env.BACKUP_BUCKET || process.env.GCS_BACKUP_BUCKET || "stokpro-private-backups";
+
+  // Production-grade Cloud Storage Adapter & Distributed Lock
+  const gcsAdapter = new GoogleCloudStorageAdapter({ bucketName });
+  const lockManager = new FirestoreBackupLockManager();
+  const backupService = new CloudBackupService(gcsAdapter, { bucketName }, lockManager);
+
+  // 1. Discover all active tenants
   const tenantsSnap = await db.collection("tenants").get();
-  const activeTenants = tenantsSnap.docs.map(d => d.id);
+  const activeTenants = tenantsSnap.docs.map((doc: any) => doc.id);
 
-  console.log(\`Found \${activeTenants.length} tenants for backup.\`);
+  console.log(`[ScheduledBackup] Yedekleme yapılacak toplam aktif işletme sayısı: ${activeTenants.length}`);
 
-  // 2. Setup GCS Adapter
-  const gcsAdapter = {
-    async uploadBackup(tenantId, fileName, content, metadata) {
-      const bucket = storage.bucket(BUCKET_NAME);
-      const year = new Date().getUTCFullYear();
-      const month = String(new Date().getUTCMonth() + 1).padStart(2, "0");
-      const objectPath = \`tenants/\${tenantId}/backups/\${year}/\${month}/\${fileName}\`;
-      const file = bucket.file(objectPath);
-      
-      await file.save(content, {
-        metadata: {
-          contentType: "application/json",
-          metadata: metadata || {}
-        },
-        private: true
-      });
+  if (activeTenants.length === 0) {
+    console.log("[ScheduledBackup] Yedeklenecek aktif işletme bulunamadı.");
+    return;
+  }
 
-      return {
-        objectPath,
-        sizeBytes: Buffer.byteLength(content, "utf-8"),
-        uri: \`gs://\${BUCKET_NAME}/\${objectPath}\`
-      };
-    },
-    async downloadBackup(objectPath) {
-      const file = storage.bucket(BUCKET_NAME).file(objectPath);
-      const [buf] = await file.download();
-      return buf.toString("utf-8");
-    },
-    async listBackups(tenantId) {
-      const [files] = await storage.bucket(BUCKET_NAME).getFiles({
-        prefix: \`tenants/\${tenantId}/backups/\`
-      });
-      return files.map(f => ({
-        objectPath: f.name,
-        tenantId,
-        sizeBytes: Number(f.metadata.size || 0),
-        createdAt: f.metadata.timeCreated || new Date().toISOString()
-      }));
-    },
-    async deleteBackup(objectPath) {
-      await storage.bucket(BUCKET_NAME).file(objectPath).delete();
-      return true;
-    }
-  };
-
-  const backupService = new CloudBackupService(gcsAdapter);
-
-  // 3. Execute backup with total tenant isolation
+  // 2. Execute scheduled backup with strict per-tenant fault isolation
   const summary = await backupService.executeScheduledBackupForAllTenants(
     activeTenants,
     (tenantId) => ({
       async getTenantData(tId) {
-        // Query Firestore with strict tenantId filter
-        const collections = {};
-        const allowed = ["products", "customers", "suppliers", "sales", "warehouses", "orders", "payments", "stockMovements"];
-        
-        for (const coll of allowed) {
+        const collections: Record<string, any[]> = {};
+        const targetCollections = [
+          "products",
+          "customers",
+          "suppliers",
+          "sales",
+          "warehouses",
+          "orders",
+          "payments",
+          "stock_movements"
+        ];
+
+        for (const coll of targetCollections) {
           const snap = await db.collection(coll).where("tenantId", "==", tId).get();
-          collections[coll] = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          collections[coll] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
         }
 
         const tenantDoc = await db.collection("tenants").doc(tId).get();
         return {
-          companyName: tenantDoc.exists ? tenantDoc.data()?.name : "İşletme",
+          companyName: tenantDoc.exists ? tenantDoc.data()?.name : `İşletme (${tId})`,
           collections
         };
       }
     })
   );
 
-  console.log("Backup summary:", JSON.stringify(summary));
-  return summary;
+  console.log(`[ScheduledBackup] Tamamlandı: ${summary.successCount}/${summary.totalTenants} başarılı, ${summary.failureCount} başarısız.`);
 });
-`;
