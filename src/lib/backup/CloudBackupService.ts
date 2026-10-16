@@ -147,6 +147,17 @@ export class CloudBackupService {
         throw new Error("Simüle edilen kontrollü bulut yedekleme depolama hatası (Test)");
       }
 
+      // Security & Persistence Guard: In production, reject InMemory storage to prevent silent fallback
+      if (
+        process.env.NODE_ENV === "production" &&
+        this.storageAdapter instanceof InMemoryCloudStorageAdapter &&
+        process.env.ALLOW_IN_MEMORY_BACKUP_TEST !== "true"
+      ) {
+        throw new Error(
+          "Kritik Yapılandırma Hatası: Üretim ortamında gerçek bulut depolama (BACKUP_BUCKET) zorunludur. Bellek içi depolamaya (in-memory) sessiz geri dönüş engellenmiştir."
+        );
+      }
+
       // 2. Fetch tenant business data from provider
       const tenantData = await dataProvider.getTenantData(tenantId);
 

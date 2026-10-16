@@ -1,4 +1,4 @@
-import { ProductRepository } from "../interfaces";
+import { ProductRepository, BarcodeConflictResult, ReplenishStockParams } from "../interfaces";
 import { Product } from "../../../types";
 import { db, auth } from "../../firebase";
 import { 
@@ -11,10 +11,11 @@ import {
   updateDoc, 
   writeBatch,
   query, 
-  where 
+  where,
+  limit
 } from "firebase/firestore";
 import { memoryCache } from "../../cache";
-import { getLocal, setLocal, SEED_PRODUCTS, logAuditEvent } from "./helpers";
+import { getLocal, setLocal, SEED_PRODUCTS, logAuditEvent, roundQty, round2 } from "./helpers";
 import { FirebaseUserRepository } from "./FirebaseUserRepository";
 import { FirebaseSubscriptionRepository } from "./FirebaseSubscriptionRepository";
 import { getPlanConfig, isSubscriptionActive } from "../../subscriptionConfig";
@@ -84,6 +85,193 @@ export class FirebaseProductRepository implements ProductRepository {
     }
   }
 
+  async getByBarcode(barcode: string, uidParam?: string): Promise<Product | null> {
+    const validUid = uidParam
+      ? assertAuthenticated(uidParam, "ProductRepository.getByBarcode")
+      : getAuthenticatedUid("ProductRepository.getByBarcode");
+
+    const clean = barcode?.trim();
+    if (!clean) return null;
+
+    const context = await this.userRepo.getOrCreateContext(validUid);
+    const tenantId = context.tenantId;
+
+    if (isDemoUser(validUid)) {
+      const list = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
+      return list.find(p => p.isActive !== false && (
+        (p.barcode && p.barcode.trim().toLowerCase() === clean.toLowerCase()) || 
+        (p.sku && p.sku.trim().toLowerCase() === clean.toLowerCase()) || 
+        p.id.toLowerCase() === clean.toLowerCase()
+      )) || null;
+    }
+
+    try {
+      // 1. Look up by exact manufacturer barcode
+      const qBarcode = query(
+        collection(this.db, "products"),
+        where("tenantId", "==", tenantId),
+        where("barcode", "==", clean),
+        limit(1)
+      );
+      const snapBarcode = await getDocs(qBarcode);
+      if (!snapBarcode.empty) {
+        const docSnap = snapBarcode.docs[0];
+        const prod = { id: docSnap.id, ...docSnap.data() } as Product;
+        if (prod.isActive !== false) return prod;
+      }
+
+      // 2. Fall back to internal SKU match
+      const qSku = query(
+        collection(this.db, "products"),
+        where("tenantId", "==", tenantId),
+        where("sku", "==", clean),
+        limit(1)
+      );
+      const snapSku = await getDocs(qSku);
+      if (!snapSku.empty) {
+        const docSnap = snapSku.docs[0];
+        const prod = { id: docSnap.id, ...docSnap.data() } as Product;
+        if (prod.isActive !== false) return prod;
+      }
+
+      return null;
+    } catch (err) {
+      console.error("FirebaseProductRepository getByBarcode error:", err);
+      return null;
+    }
+  }
+
+  async checkBarcodeConflict(barcode: string, excludeProductId?: string, uidParam?: string): Promise<BarcodeConflictResult> {
+    const clean = barcode?.trim();
+    if (!clean) {
+      return { hasConflict: false };
+    }
+
+    const found = await this.getByBarcode(clean, uidParam);
+    if (found && found.id !== excludeProductId) {
+      return {
+        hasConflict: true,
+        conflictingProduct: found
+      };
+    }
+    return { hasConflict: false };
+  }
+
+  async replenishStock(productId: string, params: ReplenishStockParams, uidParam?: string): Promise<Product> {
+    const validUid = uidParam
+      ? assertAuthenticated(uidParam, "ProductRepository.replenishStock")
+      : getAuthenticatedUid("ProductRepository.replenishStock");
+
+    const qtyToAdd = roundQty(Number(params.quantityToAdd));
+    if (isNaN(qtyToAdd) || qtyToAdd <= 0) {
+      throw new Error("Geçerli bir stok artış miktarı giriniz (0'dan büyük olmalıdır).");
+    }
+
+    const context = await this.userRepo.getOrCreateContext(validUid);
+    const product = await this.getById(productId, validUid);
+    if (!product) {
+      throw new Error("Stok artırılacak ürün bulunamadı.");
+    }
+    if (product.tenantId && product.tenantId !== context.tenantId) {
+      throw new Error("Yetkilendirme Hatası: Bu ürün başka bir firmaya aittir.");
+    }
+
+    const previousStock = roundQty(Number(product.stock || 0));
+    const newStock = roundQty(previousStock + qtyToAdd);
+    const nowIso = new Date().toISOString();
+
+    const updates: Partial<Product> = {
+      stock: newStock
+    };
+    if (params.costPrice !== undefined && !isNaN(Number(params.costPrice)) && Number(params.costPrice) >= 0) {
+      updates.costPrice = round2(Number(params.costPrice));
+    }
+
+    memoryCache.invalidate("products_");
+
+    if (isDemoUser(validUid)) {
+      const list = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
+      const updatedList = list.map(p => p.id === productId ? { ...p, ...updates } : p);
+      setLocal("stokpro_demo_products", updatedList);
+
+      const movements = getLocal<any[]>("stokpro_demo_stock_movements", []);
+      movements.unshift({
+        id: "MOV_" + Math.random().toString(36).substring(2, 9),
+        tenantId: context.tenantId,
+        productId,
+        productName: product.name,
+        type: "in",
+        quantity: qtyToAdd,
+        previousStock,
+        newStock,
+        unit: product.unit || "Adet",
+        referenceType: "purchase",
+        timestamp: nowIso,
+        userId: validUid,
+        notes: params.note || "Hızlı Stok Girişi"
+      });
+      setLocal("stokpro_demo_stock_movements", movements);
+
+      await logAuditEvent(validUid, {
+        action: "STOCK_IN",
+        entityType: "product",
+        entityId: productId,
+        companyId: context.tenantId,
+        details: {
+          productName: product.name,
+          quantityAdded: qtyToAdd,
+          previousStock,
+          newStock,
+          costPrice: updates.costPrice,
+          note: params.note
+        }
+      });
+
+      return { ...product, ...updates };
+    }
+
+    try {
+      const docRef = doc(this.db, "products", productId);
+      await updateDoc(docRef, updates);
+
+      // Append immutable stock movement audit record
+      await addDoc(collection(this.db, "stock_movements"), {
+        tenantId: context.tenantId,
+        productId,
+        productName: product.name,
+        type: "in",
+        quantity: qtyToAdd,
+        previousStock,
+        newStock,
+        unit: product.unit || "Adet",
+        referenceType: "purchase",
+        timestamp: nowIso,
+        userId: validUid,
+        notes: params.note || "Hızlı Stok Girişi"
+      });
+
+      await logAuditEvent(validUid, {
+        action: "STOCK_IN",
+        entityType: "product",
+        entityId: productId,
+        companyId: context.tenantId,
+        details: {
+          productName: product.name,
+          quantityAdded: qtyToAdd,
+          previousStock,
+          newStock,
+          costPrice: updates.costPrice,
+          note: params.note
+        }
+      }, this.db);
+
+      return { ...product, ...updates };
+    } catch (err) {
+      console.error("FirebaseProductRepository replenishStock error:", err);
+      throw err;
+    }
+  }
+
   async create(uid: string, product: Omit<Product, "id">): Promise<Product> {
     const validUid = assertAuthenticated(uid, "ProductRepository.create");
     const context = await this.userRepo.getOrCreateContext(validUid);
@@ -101,6 +289,21 @@ export class FirebaseProductRepository implements ProductRepository {
       }
     }
 
+    // Barcode duplicate conflict check within tenant
+    if (product.barcode && product.barcode.trim()) {
+      const cleanBarcode = product.barcode.trim();
+      const conflict = await this.checkBarcodeConflict(cleanBarcode, undefined, validUid);
+      if (conflict.hasConflict && conflict.conflictingProduct) {
+        throw new Error(
+          `Bu barkod (${cleanBarcode}) zaten '${conflict.conflictingProduct.name}' ürününde kayıtlı! Mükerrer ürün oluşturulamaz. Var olan ürünün stoğunu artırabilirsiniz.`
+        );
+      }
+    }
+
+    const autoSku = product.sku && product.sku.trim() 
+      ? product.sku.trim() 
+      : ("PRD-" + Math.random().toString(36).substring(2, 8).toUpperCase());
+
     const synced = syncSectorMetadata({
       metadata: product.metadata,
       attributes: product.attributes
@@ -108,6 +311,8 @@ export class FirebaseProductRepository implements ProductRepository {
 
     const initialProduct: Omit<Product, "id"> = {
       ...product,
+      sku: autoSku,
+      barcode: product.barcode?.trim() || undefined,
       metadata: synced.metadata,
       attributes: synced.attributes,
       unit: product.unit || "Adet",
@@ -128,7 +333,7 @@ export class FirebaseProductRepository implements ProductRepository {
         entityType: "product",
         entityId: newId,
         companyId: context.tenantId,
-        details: { name: product.name, sku: product.sku, stock: product.stock, price: product.price }
+        details: { name: product.name, sku: autoSku, barcode: product.barcode, stock: product.stock, price: product.price }
       });
 
       return newProduct;

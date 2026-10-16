@@ -33,6 +33,7 @@ import { Crm } from "./components/Crm";
 import { Settings } from "./components/Settings";
 import { OrdersWaybills } from "./components/OrdersWaybills";
 import { SubscriptionModal } from "./components/SubscriptionModal";
+import { QuickProductModal } from "./components/QuickProductModal";
 import { auth } from "./lib/firebase";
 import { assertAuthenticated, isDemoAllowed } from "./lib/authGuard";
 import { onAuthStateChanged, signOut } from "firebase/auth";
@@ -42,6 +43,7 @@ import {
   updateProduct, 
   deleteProduct, 
   restoreProduct,
+  replenishStock,
   getSales, 
   addSale,
   getCustomers,
@@ -97,6 +99,8 @@ export default function App() {
 
   // Scanned product action overlay
   const [scannedProduct, setScannedProduct] = useState<Product | null>(null);
+  const [scannedBarcodeForNewProduct, setScannedBarcodeForNewProduct] = useState<string | null>(null);
+  const [showQuickAddModal, setShowQuickAddModal] = useState(false);
   const [scanQty, setScanQty] = useState(1);
   const [scanSuccessMsg, setScanSuccessMsg] = useState("");
   const [scanErrorMsg, setScanErrorMsg] = useState("");
@@ -243,29 +247,48 @@ export default function App() {
     }
   };
 
+  // Quick replenish helper (creates stock_movement audit record)
+  const handleReplenishProduct = async (
+    productId: string, 
+    quantityToAdd: number, 
+    options?: { costPrice?: number; note?: string }
+  ) => {
+    const uid = user?.uid || auth.currentUser?.uid;
+    if (!uid) throw new Error("Oturum açık değil.");
+    await replenishStock(productId, {
+      quantityToAdd,
+      costPrice: options?.costPrice,
+      note: options?.note || "Hızlı Stok Girişi"
+    }, uid);
+    await fetchData(false);
+  };
+
   // Quick replenish from dashboard
   const handleQuickReplenish = async (productId: string, amount: number) => {
-    const product = products.find((p) => p.id === productId);
-    if (product) {
-      await handleUpdateProduct(productId, { stock: product.stock + amount });
-    }
+    await handleReplenishProduct(productId, amount, { note: "Konsol Hızlı Stok Takviyesi" });
   };
 
   // Handle successful scanner read
   const handleScanSuccess = (decodedText: string) => {
     setScanSuccessMsg("");
     setScanErrorMsg("");
+    const cleanCode = decodedText.trim();
     // Find matching product either by manufacturer barcode, merchant sku or technical id
     const matched = products.find(
-      (p) => p.sku === decodedText || p.id === decodedText || (p.barcode && p.barcode === decodedText)
+      (p) =>
+        (p.barcode && p.barcode.trim().toLowerCase() === cleanCode.toLowerCase()) ||
+        (p.sku && p.sku.trim().toLowerCase() === cleanCode.toLowerCase()) ||
+        p.id.toLowerCase() === cleanCode.toLowerCase()
     );
 
     if (matched) {
       setScannedProduct(matched);
       setScanQty(1);
+      setScannedBarcodeForNewProduct(null);
     } else {
-      setScanErrorMsg(`Ürün bulunamadı: "${decodedText}". Lütfen geçerli bir barkod taratın.`);
-      setTimeout(() => setScanErrorMsg(""), 5000);
+      // Product not found! Set scannedBarcodeForNewProduct to allow 1-click addition
+      setScannedBarcodeForNewProduct(cleanCode);
+      setScannedProduct(null);
     }
   };
 
@@ -287,7 +310,7 @@ export default function App() {
   const handleScanReplenishSubmit = async () => {
     if (!scannedProduct) return;
     try {
-      await handleUpdateProduct(scannedProduct.id, { stock: scannedProduct.stock + scanQty });
+      await handleReplenishProduct(scannedProduct.id, scanQty, { note: "Kamera Barkod Okuyucu Stok Girişi" });
       setScanSuccessMsg(`Stok güncellendi: +${scanQty} ${scannedProduct.name}`);
       setScannedProduct(null);
       setTimeout(() => setScanSuccessMsg(""), 4000);
@@ -548,6 +571,7 @@ export default function App() {
                     onUpdateProduct={handleUpdateProduct}
                     onDeleteProduct={handleDeleteProduct}
                     onRestoreProduct={handleRestoreProduct}
+                    onReplenishProduct={handleReplenishProduct}
                     onRefreshData={fetchData}
                     initialFilter={inventoryFilter}
                     onClearInitialFilter={() => setInventoryFilter(null)}
@@ -565,9 +589,9 @@ export default function App() {
                 {activeTab === "scan" && (
                   <div className="space-y-6">
                     <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
-                      <h2 className="text-lg font-bold text-slate-800">QR Kod Stok & Satış Tarayıcı</h2>
+                      <h2 className="text-lg font-bold text-slate-800">Barkod & QR Stok / Satış Tarayıcı</h2>
                       <p className="text-xs text-slate-400">
-                        Kameranızı açarak ürünün QR kodunu taratın, stoktan düşürün veya takviye edin.
+                        Kameranızla ürünün barkodunu veya QR kodunu okutun; doğrudan stok girişi yapın, satın veya yeni ürün olarak kaydedin.
                       </p>
                     </div>
 
@@ -582,6 +606,41 @@ export default function App() {
                       <div className="bg-rose-50 text-rose-600 text-xs p-3 rounded-xl border border-rose-100 flex items-center gap-2 max-w-md mx-auto">
                         <AlertCircle className="w-4 h-4 flex-shrink-0" />
                         <span>{scanErrorMsg}</span>
+                      </div>
+                    )}
+
+                    {/* Unregistered Barcode Found Card */}
+                    {scannedBarcodeForNewProduct && (
+                      <div className="bg-amber-50 border border-amber-300 p-4 rounded-2xl max-w-md mx-auto shadow-sm animate-fade-in text-center space-y-3">
+                        <span className="text-[10px] font-black uppercase text-amber-700 bg-amber-100 px-2.5 py-1 rounded-full">
+                          Kayıtlı Olmayan Barkod
+                        </span>
+                        <div>
+                          <span className="text-sm font-bold text-slate-800 block">Bu barkod envanterinizde bulunamadı</span>
+                          <span className="text-xs text-amber-900 font-mono block mt-1 bg-white border border-amber-200 py-1 px-2 rounded-lg font-bold">
+                            {scannedBarcodeForNewProduct}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          Paketli veya yeni ürününüzü bu barkodla hemen stoğunuza ekleyebilirsiniz.
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowQuickAddModal(true)}
+                            className="flex-1 py-2.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                          >
+                            <Plus className="w-4 h-4" />
+                            <span>Yeni Ürün Olarak Ekle</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setScannedBarcodeForNewProduct(null)}
+                            className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                          >
+                            Kapat
+                          </button>
+                        </div>
                       </div>
                     )}
 
@@ -733,6 +792,25 @@ export default function App() {
         onRefreshEntitlement={handleRefreshEntitlement}
         blockReason={blockReason}
       />
+
+      {/* 6. Quick Product Modal for Scanned Barcode */}
+      {showQuickAddModal && (
+        <QuickProductModal
+          initialBarcode={scannedBarcodeForNewProduct || undefined}
+          existingProducts={products}
+          onAddProduct={async (p) => {
+            await handleAddProduct(p);
+            setShowQuickAddModal(false);
+            setScannedBarcodeForNewProduct(null);
+            setScanSuccessMsg(`"${p.name}" başarıyla oluşturuldu ve stoğa eklendi!`);
+            setTimeout(() => setScanSuccessMsg(""), 4000);
+          }}
+          onClose={() => {
+            setShowQuickAddModal(false);
+            setScannedBarcodeForNewProduct(null);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -564,6 +564,15 @@ async function runCloudBackupTests() {
       console.error("Functions smoke test error:", e);
     }
     assert(smokeExported, "functions/lib/index.js modülü Node.js çalışma zamanında hatasız import/require edilebilmeli (Smoke Test)");
+
+    // Verify Node.js 22 runtime configuration
+    const functionsPkgPath = path.join(process.cwd(), "functions", "package.json");
+    const functionsPkg = JSON.parse(fs.readFileSync(functionsPkgPath, "utf-8"));
+    assert(functionsPkg.engines?.node === "22", "functions/package.json içinde engines.node değeri '22' olmalı (Node.js 22 LTS Runtime)");
+
+    const functionsTsconfigPath = path.join(process.cwd(), "functions", "tsconfig.json");
+    const functionsTsconfig = JSON.parse(fs.readFileSync(functionsTsconfigPath, "utf-8"));
+    assert(functionsTsconfig.compilerOptions?.target === "es2022", "functions/tsconfig.json içinde target değeri 'es2022' olmalı (Node.js 22 uyumlu)");
   }
 
   console.log("\n=====================================================================");

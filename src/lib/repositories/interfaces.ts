@@ -80,13 +80,28 @@ export interface CancelSaleParams {
   idempotencyKey?: string;
 }
 
+export interface BarcodeConflictResult {
+  hasConflict: boolean;
+  conflictingProduct?: Product;
+}
+
+export interface ReplenishStockParams {
+  quantityToAdd: number;
+  costPrice?: number;
+  note?: string;
+  supplierId?: string;
+}
+
 /**
  * Product Domain Repository Interface
  * Decouples product inventory and catalog logic from database technology.
  */
 export interface ProductRepository {
   getAll(uid: string, includeArchived?: boolean): Promise<Product[]>;
-  getById(id: string): Promise<Product | null>;
+  getById(id: string, uidParam?: string): Promise<Product | null>;
+  getByBarcode?(barcode: string, uidParam?: string): Promise<Product | null>;
+  checkBarcodeConflict?(barcode: string, excludeProductId?: string, uidParam?: string): Promise<BarcodeConflictResult>;
+  replenishStock?(productId: string, params: ReplenishStockParams, uidParam?: string): Promise<Product>;
   create(uid: string, product: Omit<Product, "id">): Promise<Product>;
   batchCreate?(uid: string, products: Omit<Product, "id">[], onProgress?: (processed: number, total: number) => void): Promise<Product[]>;
   update(productId: string, updates: Partial<Product>, uid?: string): Promise<void>;

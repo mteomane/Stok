@@ -428,6 +428,40 @@ export async function deleteProduct(productId: string): Promise<void> {
   return repositories.products.delete(productId);
 }
 
+export async function getProductByBarcode(barcode: string, uid?: string): Promise<Product | null> {
+  const currentUid = uid || auth.currentUser?.uid || "demo-user";
+  if (repositories.products.getByBarcode) {
+    return repositories.products.getByBarcode(barcode, currentUid);
+  }
+  const all = await repositories.products.getAll(currentUid);
+  const clean = barcode.trim().toLowerCase();
+  return all.find(p => (p.barcode && p.barcode.toLowerCase() === clean) || (p.sku && p.sku.toLowerCase() === clean)) || null;
+}
+
+export async function checkBarcodeConflict(barcode: string, excludeProductId?: string, uid?: string) {
+  const currentUid = uid || auth.currentUser?.uid || "demo-user";
+  if (repositories.products.checkBarcodeConflict) {
+    return repositories.products.checkBarcodeConflict(barcode, excludeProductId, currentUid);
+  }
+  const found = await getProductByBarcode(barcode, currentUid);
+  if (found && found.id !== excludeProductId) {
+    return { hasConflict: true, conflictingProduct: found };
+  }
+  return { hasConflict: false };
+}
+
+export async function replenishStock(productId: string, params: { quantityToAdd: number; costPrice?: number; note?: string; supplierId?: string }, uid?: string): Promise<Product> {
+  const currentUid = uid || auth.currentUser?.uid || "demo-user";
+  if (repositories.products.replenishStock) {
+    return repositories.products.replenishStock(productId, params, currentUid);
+  }
+  const product = await repositories.products.getById(productId, currentUid);
+  if (!product) throw new Error("Ürün bulunamadı.");
+  const newStock = roundQty((product.stock || 0) + params.quantityToAdd);
+  await repositories.products.update(productId, { stock: newStock }, currentUid);
+  return { ...product, stock: newStock };
+}
+
 export async function restoreProduct(productId: string): Promise<void> {
   return repositories.products.restore(productId);
 }

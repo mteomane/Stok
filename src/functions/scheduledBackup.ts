@@ -2,7 +2,7 @@
  * Firebase Functions (2nd Gen) Scheduled Cloud Backup
  * 
  * Deployment Specifications:
- * - Runtime: Node.js 20+
+ * - Runtime: Node.js 22+
  * - Schedule: Every day at 02:00 Europe/Istanbul ("0 2 * * *")
  * - Timezone: Europe/Istanbul
  * - Memory: 512MiB

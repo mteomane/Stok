@@ -29,11 +29,17 @@ import {
   Apple,
   Store,
   Clock,
-  Download
+  Download,
+  Barcode as BarcodeIcon,
+  Camera,
+  TrendingUp
 } from "lucide-react";
 import { QRImage } from "./QRImage";
 import { BulkQRPrintModal } from "./BulkQRPrintModal";
 import { UniversalImportModal } from "./UniversalImportModal";
+import { QuickProductModal } from "./QuickProductModal";
+import { QuickReplenishModal } from "./QuickReplenishModal";
+import { QRScanner } from "./QRScanner";
 import { getSectorProfile, shouldShowRolls, SECTOR_PROFILES } from "../lib/sectorConfig";
 import { exportService } from "../lib/export/ExportService";
 import { triggerFileDownload } from "../lib/export/fileDownload";
@@ -44,6 +50,7 @@ interface InventoryProps {
   onUpdateProduct: (id: string, updates: Partial<Product>) => Promise<void>;
   onDeleteProduct: (id: string) => Promise<void>;
   onRestoreProduct?: (id: string) => Promise<void>;
+  onReplenishProduct?: (productId: string, quantityToAdd: number, options?: { costPrice?: number; note?: string }) => Promise<void>;
   onRefreshData?: () => Promise<void>;
   initialFilter?: {
     onlyLowStock?: boolean;
@@ -59,6 +66,7 @@ export function Inventory({
   onUpdateProduct, 
   onDeleteProduct, 
   onRestoreProduct,
+  onReplenishProduct,
   onRefreshData,
   initialFilter,
   onClearInitialFilter 
@@ -73,6 +81,13 @@ export function Inventory({
   const [pageSize, setPageSize] = useState(24);
   const [isExporting, setIsExporting] = useState(false);
 
+  // Quick product & Barcode modals
+  const [showQuickAddModal, setShowQuickAddModal] = useState(false);
+  const [quickAddInitialBarcode, setQuickAddInitialBarcode] = useState<string | undefined>(undefined);
+  const [quickAddInitialName, setQuickAddInitialName] = useState<string | undefined>(undefined);
+  const [replenishProduct, setReplenishProduct] = useState<Product | null>(null);
+  const [showScannerModal, setShowScannerModal] = useState(false);
+
   // Debounce search by 200ms to eliminate UI stuttering on mobile
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -80,6 +95,76 @@ export function Inventory({
     }, 200);
     return () => clearTimeout(timer);
   }, [search]);
+
+  // Handle hardware scanner / keyboard Enter press in search input
+  const handleSearchEnter = () => {
+    const q = search.trim().toLowerCase();
+    if (!q) return;
+
+    // Check exact match for barcode or SKU
+    const exactMatch = products.find(
+      (p) => p.isActive !== false && (
+        (p.barcode && p.barcode.trim().toLowerCase() === q) ||
+        (p.sku && p.sku.trim().toLowerCase() === q) ||
+        p.id.toLowerCase() === q
+      )
+    );
+
+    if (exactMatch) {
+      setReplenishProduct(exactMatch);
+      setSearch("");
+      return;
+    }
+
+    // If barcode-like (numbers 5-18 chars) and not found, offer quick add
+    if (/^\d{5,18}$/.test(q)) {
+      setQuickAddInitialBarcode(search.trim());
+      setQuickAddInitialName(undefined);
+      setShowQuickAddModal(true);
+      setSearch("");
+    }
+  };
+
+  // Handle inline camera scan result
+  const handleInlineScanSuccess = (decodedText: string) => {
+    const clean = decodedText.trim();
+    setShowScannerModal(false);
+
+    const matched = products.find(
+      (p) => p.isActive !== false && (
+        (p.barcode && p.barcode.trim().toLowerCase() === clean.toLowerCase()) ||
+        (p.sku && p.sku.trim().toLowerCase() === clean.toLowerCase()) ||
+        p.id.toLowerCase() === clean.toLowerCase()
+      )
+    );
+
+    if (matched) {
+      setReplenishProduct(matched);
+    } else {
+      setQuickAddInitialBarcode(clean);
+      setQuickAddInitialName(undefined);
+      setShowQuickAddModal(true);
+    }
+  };
+
+  // Stock Replenish caller
+  const handleReplenish = async (
+    productId: string, 
+    quantityToAdd: number, 
+    options?: { costPrice?: number; note?: string }
+  ) => {
+    if (onReplenishProduct) {
+      await onReplenishProduct(productId, quantityToAdd, options);
+    } else {
+      const prod = products.find(p => p.id === productId);
+      const cur = prod ? Number(prod.stock || 0) : 0;
+      await onUpdateProduct(productId, { 
+        stock: roundQty(cur + quantityToAdd),
+        ...(options?.costPrice !== undefined ? { costPrice: options.costPrice } : {})
+      });
+    }
+    if (onRefreshData) await onRefreshData();
+  };
 
   // Reset pagination on filter change
   useEffect(() => {
@@ -116,7 +201,6 @@ export function Inventory({
     }
   }, [initialFilter]);
 
-  
   // Sector settings
   const [sectorSettings, setSectorSettings] = useState<SectorSettings | null>(null);
   
@@ -317,7 +401,11 @@ export function Inventory({
       }
 
       const matchesSearch = !q ||
-        p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
+        p.name.toLowerCase().includes(q) || 
+        p.sku.toLowerCase().includes(q) ||
+        (p.barcode && p.barcode.toLowerCase().includes(q)) ||
+        (p.brand && p.brand.toLowerCase().includes(q)) ||
+        (p.category && p.category.toLowerCase().includes(q));
       const matchesCategory = selectedCategory === "Tümü" || p.category === selectedCategory;
       const matchesLowStock = !onlyLowStock || p.stock <= p.minStock;
       return matchesSearch && matchesCategory && matchesLowStock;
@@ -521,13 +609,13 @@ export function Inventory({
           </button>
 
           <button
+            type="button"
             onClick={() => {
-              setFormError("");
-              setAttributes({});
-              setIsPackaged(false);
-              setShowAddModal(true);
+              setQuickAddInitialBarcode(undefined);
+              setQuickAddInitialName(undefined);
+              setShowQuickAddModal(true);
             }}
-            className="flex-1 sm:flex-none px-5 py-2.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 shadow-sm shadow-indigo-100 active:scale-95"
+            className="flex-1 sm:flex-none px-5 py-2.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 shadow-sm shadow-indigo-100 active:scale-95 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>Yeni Ürün Ekle</span>
@@ -537,15 +625,30 @@ export function Inventory({
 
       {/* Filter and search controls */}
       <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
+        <div className="relative flex-1 flex items-center">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Ürün adı, barkod, marka veya varyasyon ara..."
-            className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all bg-white"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleSearchEnter();
+              }
+            }}
+            placeholder="Barkod okutun veya ürün adı, SKU, marka arayın..."
+            className="w-full pl-10 pr-24 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all bg-white font-medium"
           />
+          <button
+            type="button"
+            onClick={() => setShowScannerModal(true)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-md text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+            title="Kamera ile barkod / QR okut"
+          >
+            <Camera className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Kamera</span>
+          </button>
         </div>
 
         {/* Quick Low Stock Toggle Filter */}
@@ -643,10 +746,29 @@ export function Inventory({
 
       {/* Products Grid */}
       {filteredProducts.length === 0 ? (
-        <div className="bg-white p-12 text-center border border-slate-200 rounded-xl shadow-sm">
+        <div className="bg-white p-10 text-center border border-slate-200 rounded-2xl shadow-sm">
           <AlertCircle className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-          <span className="text-sm font-bold text-slate-700 block">Eşleşen Ürün Bulunmadı</span>
-          <p className="text-xs text-slate-400 mt-1">Lütfen arama teriminizi değiştirin veya yeni ürün ekleyin.</p>
+          <span className="text-base font-bold text-slate-800 block">
+            {debouncedSearch ? `"${debouncedSearch}" ile eşleşen ürün bulunamadı` : "Henüz ürün eklenmemiş"}
+          </span>
+          <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+            {debouncedSearch 
+              ? "Bu barkod veya isimle stoğunuza tek adımda yeni ürün kaydedebilirsiniz." 
+              : "Yeni ürün ekleyerek stoklarınızı ve satışlarınızı kolayca takip etmeye başlayın."}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              const isBarcodeLike = /^\d{5,18}$/.test(debouncedSearch.trim());
+              setQuickAddInitialBarcode(isBarcodeLike ? debouncedSearch.trim() : "");
+              setQuickAddInitialName(!isBarcodeLike ? debouncedSearch.trim() : "");
+              setShowQuickAddModal(true);
+            }}
+            className="mt-4 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md shadow-indigo-600/20 active:scale-95 transition-all inline-flex items-center gap-2 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>{debouncedSearch ? `"${debouncedSearch}" Olarak Yeni Ürün Ekle` : "Yeni Ürün Ekle"}</span>
+          </button>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -898,6 +1020,19 @@ export function Inventory({
                         <Plus className="w-3.5 h-3.5" />
                       </button>
                     </div>
+
+                    {/* Dedicated Quick Replenish Button */}
+                    {p.isActive !== false && (
+                      <button
+                        type="button"
+                        onClick={() => setReplenishProduct(p)}
+                        title="Hızlı Stok Girişi Yap"
+                        className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-xs rounded-lg border border-emerald-200 flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
+                      >
+                        <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
+                        <span className="hidden sm:inline">Stok Ekle</span>
+                      </button>
+                    )}
 
                     {p.isActive === false ? (
                       onRestoreProduct && (
@@ -1715,6 +1850,64 @@ export function Inventory({
                 Bu QR kodunu yazdırıp kumaş topunun üzerine yapıştırabilirsiniz. Barkod okuyucu veya telefon kamerası ile okutulduğunda doğrudan bu kumaş topu seçilecektir.
               </p>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Product Modal (Barcoded or Unbarcoded) */}
+      {showQuickAddModal && (
+        <QuickProductModal
+          initialBarcode={quickAddInitialBarcode}
+          initialName={quickAddInitialName}
+          existingProducts={products}
+          onAddProduct={async (p) => {
+            await onAddProduct(p);
+            setShowQuickAddModal(false);
+            setQuickAddInitialBarcode(undefined);
+            setQuickAddInitialName(undefined);
+            if (onRefreshData) await onRefreshData();
+          }}
+          onSelectExistingProduct={(existingProd) => {
+            setShowQuickAddModal(false);
+            setReplenishProduct(existingProd);
+          }}
+          onClose={() => {
+            setShowQuickAddModal(false);
+            setQuickAddInitialBarcode(undefined);
+            setQuickAddInitialName(undefined);
+          }}
+        />
+      )}
+
+      {/* Quick Replenish Modal (Stock In) */}
+      {replenishProduct && (
+        <QuickReplenishModal
+          product={replenishProduct}
+          onReplenish={async (productId, quantityToAdd, options) => {
+            await handleReplenish(productId, quantityToAdd, options);
+          }}
+          onClose={() => setReplenishProduct(null)}
+        />
+      )}
+
+      {/* Inline Camera Scanner Modal for Inventory */}
+      {showScannerModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-55 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md p-5 shadow-2xl border border-slate-200 relative animate-fade-in">
+            <div className="flex justify-between items-center mb-3">
+              <div className="flex items-center gap-2">
+                <BarcodeIcon className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-bold text-slate-800 text-sm">Barkod / QR Kod Tara</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowScannerModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <QRScanner onScanSuccess={handleInlineScanSuccess} />
           </div>
         </div>
       )}

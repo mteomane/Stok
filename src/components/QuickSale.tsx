@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { Product, CartItem, Customer } from "../types";
 import { auth } from "../lib/firebase";
 import { getCustomers, roundQty } from "../lib/firestoreService";
@@ -16,8 +16,12 @@ import {
   DollarSign,
   Scissors,
   Layers,
-  Loader2
+  Loader2,
+  Camera,
+  Barcode as BarcodeIcon,
+  X
 } from "lucide-react";
+import { QRScanner } from "./QRScanner";
 
 interface QuickSaleProps {
   products: Product[];
@@ -39,6 +43,8 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
   const [success, setSuccess] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentIdempotencyKey, setCurrentIdempotencyKey] = useState<string | null>(null);
+  const [showCameraScanner, setShowCameraScanner] = useState(false);
+  const [scannerFeedback, setScannerFeedback] = useState<string | null>(null);
 
   // Roll selection states
   const [selectedRollId, setSelectedRollId] = useState<string>("");
@@ -160,6 +166,50 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
     setCutLength("");
   };
 
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const term = search.trim().toLowerCase();
+      if (!term) return;
+
+      const exactMatch = products.find(
+        (p) =>
+          (p.barcode && p.barcode.trim().toLowerCase() === term) ||
+          (p.sku && p.sku.trim().toLowerCase() === term) ||
+          p.id.toLowerCase() === term
+      );
+
+      if (exactMatch) {
+        addToCart(exactMatch, 1);
+        setSearch("");
+        setSelectedProduct(null);
+      } else if (suggestions.length === 1) {
+        addToCart(suggestions[0], 1);
+        setSearch("");
+        setSelectedProduct(null);
+      }
+    }
+  };
+
+  const handleCameraScanSuccess = (decodedText: string) => {
+    const clean = decodedText.trim().toLowerCase();
+    const matched = products.find(
+      (p) =>
+        (p.barcode && p.barcode.trim().toLowerCase() === clean) ||
+        (p.sku && p.sku.trim().toLowerCase() === clean) ||
+        p.id.toLowerCase() === clean
+    );
+
+    if (matched) {
+      addToCart(matched, 1);
+      setShowCameraScanner(false);
+      setScannerFeedback(`"${matched.name}" sepete eklendi!`);
+      setTimeout(() => setScannerFeedback(null), 3000);
+    } else {
+      setError(`Okutulan kod sistemde kayıtlı değil: ${decodedText}`);
+    }
+  };
+
   const updateCartQuantity = (productId: string, newQty: number) => {
     setError(null);
     setCurrentIdempotencyKey(null);
@@ -278,15 +328,25 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
 
           <div className="relative">
             <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">Ürün veya Barkod / SKU Ara</label>
-            <div className="relative">
+            <div className="relative flex items-center">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
               <input
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Örn: Pamuk Kumaş veya Barkod..."
-                className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-slate-50"
+                onKeyDown={handleSearchKeyDown}
+                placeholder="Barkod okutun veya ürün adı yazın..."
+                className="w-full pl-10 pr-24 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-slate-50 font-medium"
               />
+              <button
+                type="button"
+                onClick={() => setShowCameraScanner(true)}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-md text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                title="Kamera ile barkod okut"
+              >
+                <Camera className="w-3.5 h-3.5" />
+                <span className="text-[11px]">Kamera</span>
+              </button>
             </div>
 
             {/* Suggestions list */}
@@ -701,6 +761,28 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
           </div>
         </div>
       </div>
+
+      {/* Camera Barcode Scanner Modal for Quick Sale */}
+      {showCameraScanner && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-55 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md p-5 shadow-2xl border border-slate-200 relative animate-fade-in">
+            <div className="flex justify-between items-center mb-3">
+              <div className="flex items-center gap-2">
+                <BarcodeIcon className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-bold text-slate-800 text-sm">Satış İçin Barkod / QR Okut</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCameraScanner(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <QRScanner onScanSuccess={handleCameraScanSuccess} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -4,9 +4,11 @@ import { Camera, AlertCircle, Keyboard } from "lucide-react";
 
 interface QRScannerProps {
   onScanSuccess: (decodedText: string) => void;
+  title?: string;
+  subtitle?: string;
 }
 
-export function QRScanner({ onScanSuccess }: QRScannerProps) {
+export function QRScanner({ onScanSuccess, title, subtitle }: QRScannerProps) {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [manualCode, setManualCode] = useState("");
   const scannerRef = useRef<Html5Qrcode | null>(null);
@@ -27,12 +29,11 @@ export function QRScanner({ onScanSuccess }: QRScannerProps) {
         await html5Qrcode.start(
           { facingMode: "environment" },
           {
-            fps: 10,
-            qrbox: (width, height) => {
-              const minDimension = Math.min(width || 250, height || 250);
-              // html5-qrcode strictly requires qrbox dimension value to be at least 50px
-              const size = Math.max(50, Math.floor(minDimension * 0.7));
-              return { width: size, height: size };
+            fps: 15,
+            qrbox: (viewfinderWidth, viewfinderHeight) => {
+              const width = Math.max(80, Math.floor((viewfinderWidth || 300) * 0.85));
+              const height = Math.max(60, Math.floor((viewfinderHeight || 250) * 0.6));
+              return { width, height };
             },
           },
           (decodedText) => {

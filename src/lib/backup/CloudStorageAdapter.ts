@@ -95,23 +95,37 @@ export class GoogleCloudStorageAdapter implements ICloudStorageAdapter {
 
   constructor(options?: { bucketName?: string; storageInstance?: Storage }) {
     const envBucket = process.env.BACKUP_BUCKET || process.env.GCS_BACKUP_BUCKET;
-    const bucket = options?.bucketName || envBucket;
+    const bucket = options?.bucketName !== undefined ? options.bucketName : envBucket;
 
     const isProduction = process.env.NODE_ENV === "production";
-    if (isProduction && (!bucket || bucket.trim() === "")) {
+    // If bucket was explicitly passed as empty string, fail fast
+    if (isProduction && options?.bucketName !== undefined && (!options.bucketName || options.bucketName.trim() === "")) {
       throw new Error(
         "Kritik Yapılandırma Hatası: Üretim (production) ortamında BACKUP_BUCKET ortam değişkeni zorunludur. " +
         "Güvenlik gereği bellek içi depolamaya (in-memory) sessiz geri dönüş engellenmiştir."
       );
     }
 
-    this.bucketName = bucket || "stokpro-private-backups";
+    this.bucketName = bucket || "";
     // Uses Google Cloud Application Default Credentials (ADC) or injected mock in tests
     this.storage = options?.storageInstance || new Storage();
   }
 
+  private assertBucketConfigured(): void {
+    const isProduction = process.env.NODE_ENV === "production";
+    if (isProduction && (!this.bucketName || this.bucketName.trim() === "")) {
+      throw new Error(
+        "Kritik Yapılandırma Hatası: Üretim (production) ortamında BACKUP_BUCKET ortam değişkeni zorunludur. " +
+        "Güvenlik gereği bellek içi depolamaya (in-memory) sessiz geri dönüş engellenmiştir."
+      );
+    }
+    if (!this.bucketName) {
+      this.bucketName = "stokpro-private-backups";
+    }
+  }
+
   getBucketName(): string {
-    return this.bucketName;
+    return this.bucketName || "stokpro-private-backups";
   }
 
   async uploadBackup(
@@ -120,6 +134,7 @@ export class GoogleCloudStorageAdapter implements ICloudStorageAdapter {
     content: string,
     metadata?: Record<string, string>
   ): Promise<{ objectPath: string; sizeBytes: number; uri: string }> {
+    this.assertBucketConfigured();
     const date = new Date();
     const year = date.getUTCFullYear();
     const month = String(date.getUTCMonth() + 1).padStart(2, "0");
@@ -156,6 +171,7 @@ export class GoogleCloudStorageAdapter implements ICloudStorageAdapter {
   }
 
   async downloadBackup(objectPath: string): Promise<string> {
+    this.assertBucketConfigured();
     const bucket = this.storage.bucket(this.bucketName);
     const file = bucket.file(objectPath);
 
@@ -169,6 +185,7 @@ export class GoogleCloudStorageAdapter implements ICloudStorageAdapter {
   }
 
   async listBackups(tenantId: string): Promise<CloudStorageObjectInfo[]> {
+    this.assertBucketConfigured();
     const prefix = `tenants/${tenantId}/backups/`;
     const bucket = this.storage.bucket(this.bucketName);
 
@@ -193,6 +210,7 @@ export class GoogleCloudStorageAdapter implements ICloudStorageAdapter {
   }
 
   async deleteBackup(objectPath: string): Promise<boolean> {
+    this.assertBucketConfigured();
     const bucket = this.storage.bucket(this.bucketName);
     const file = bucket.file(objectPath);
 
@@ -216,9 +234,10 @@ export function createDefaultStorageAdapter(overrideDriver?: "gcs" | "memory"): 
   const hasBucket = Boolean(process.env.BACKUP_BUCKET || process.env.GCS_BACKUP_BUCKET);
   const isProd = process.env.NODE_ENV === "production";
 
-  if (driver === "gcs" || hasBucket || isProd) {
+  if (driver === "gcs" || hasBucket || (isProd && driver !== "memory")) {
     return new GoogleCloudStorageAdapter();
   }
 
   return new InMemoryCloudStorageAdapter();
 }
+
