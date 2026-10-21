@@ -292,9 +292,11 @@ export async function logAuditEvent(uid: string, event: {
 }): Promise<void> {
   const timestamp = new Date().toISOString();
   const context = await getOrCreateTenantContext(uid);
-  const logEntry: AuditLog = {
+  const finalTenantId = event.companyId || context.tenantId || uid;
+  const logEntry: any = {
+    tenantId: finalTenantId,
     userId: uid,
-    companyId: event.companyId || context.tenantId || uid,
+    companyId: finalTenantId,
     action: event.action,
     entityType: event.entityType,
     entityId: event.entityId,
@@ -428,6 +430,18 @@ export async function deleteProduct(productId: string): Promise<void> {
   return repositories.products.delete(productId);
 }
 
+export function subscribeProducts(
+  uid: string, 
+  onUpdate: (products: Product[]) => void, 
+  onError?: (err: Error) => void, 
+  includeDeleted = false
+): () => void {
+  if (repositories.products.subscribe) {
+    return repositories.products.subscribe(uid, onUpdate, onError, includeDeleted);
+  }
+  return () => {};
+}
+
 export async function getProductByBarcode(barcode: string, uid?: string): Promise<Product | null> {
   const currentUid = uid || auth.currentUser?.uid || "demo-user";
   if (repositories.products.getByBarcode) {
@@ -514,6 +528,17 @@ export async function processSaleTransaction(uid: string, params: ProcessSalePar
 
 export async function cancelSaleAtomic(uid: string, params: CancelSaleParams): Promise<Sale> {
   return repositories.sales.cancelAtomic(uid, params);
+}
+
+export function subscribeSales(
+  uid: string,
+  onUpdate: (sales: Sale[]) => void,
+  onError?: (err: Error) => void
+): () => void {
+  if (repositories.sales.subscribe) {
+    return repositories.sales.subscribe(uid, onUpdate, onError);
+  }
+  return () => {};
 }
 
 // Internal legacy implementation (superseded by SalesRepository)

@@ -21,7 +21,8 @@ import {
   Clock,
   Crown,
   CreditCard,
-  ShieldAlert
+  ShieldAlert,
+  Mail
 } from "lucide-react";
 import { Product, Sale, SubscriptionEntitlement, TenantContext } from "./types";
 import { Dashboard } from "./components/Dashboard";
@@ -36,7 +37,7 @@ import { SubscriptionModal } from "./components/SubscriptionModal";
 import { QuickProductModal } from "./components/QuickProductModal";
 import { auth } from "./lib/firebase";
 import { assertAuthenticated, isDemoAllowed } from "./lib/authGuard";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged, signOut, sendEmailVerification } from "firebase/auth";
 import { 
   getProducts, 
   addProduct, 
@@ -50,7 +51,9 @@ import {
   updateCustomer,
   processSaleTransaction,
   getTenantEntitlement,
-  getOrCreateTenantContext
+  getOrCreateTenantContext,
+  subscribeProducts,
+  subscribeSales
 } from "./lib/firestoreService";
 import { Auth } from "./components/Auth";
 
@@ -67,6 +70,26 @@ export default function App() {
   const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
   const [blockReason, setBlockReason] = useState<string | undefined>(undefined);
   const [tenantContext, setTenantContext] = useState<TenantContext | null>(null);
+
+  // Email Verification State
+  const [dismissEmailVerification, setDismissEmailVerification] = useState(false);
+  const [resendingVerification, setResendingVerification] = useState(false);
+  const [verificationStatusMsg, setVerificationStatusMsg] = useState("");
+
+  const handleResendEmailVerification = async () => {
+    if (!auth.currentUser) return;
+    setResendingVerification(true);
+    setVerificationStatusMsg("");
+    try {
+      await sendEmailVerification(auth.currentUser);
+      setVerificationStatusMsg("Doğrulama bağlantısı e-posta adresinize tekrar gönderildi!");
+    } catch (err: any) {
+      console.error("Resend verification error:", err);
+      setVerificationStatusMsg("Doğrulama e-postası şu an gönderilemedi. Lütfen daha sonra tekrar deneyin.");
+    } finally {
+      setResendingVerification(false);
+    }
+  };
 
   // Core backend state
   const [products, setProducts] = useState<Product[]>([]);
@@ -156,6 +179,41 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  // Multi-device real-time synchronization (e.g. desktop and mobile phone)
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid || uid === "demo-user" || uid.startsWith("local-")) return;
+
+    let unsubProducts: (() => void) | null = null;
+    let unsubSales: (() => void) | null = null;
+
+    try {
+      unsubProducts = subscribeProducts(
+        uid,
+        (realtimeProducts) => {
+          setProducts(realtimeProducts);
+        },
+        (err) => console.warn("Realtime products sync notice:", err),
+        true // include deleted so soft-deleted status updates immediately
+      );
+
+      unsubSales = subscribeSales(
+        uid,
+        (realtimeSales) => {
+          setSales(realtimeSales);
+        },
+        (err) => console.warn("Realtime sales sync notice:", err)
+      );
+    } catch (err) {
+      console.warn("Realtime subscription setup notice:", err);
+    }
+
+    return () => {
+      if (unsubProducts) unsubProducts();
+      if (unsubSales) unsubSales();
+    };
+  }, [user?.uid]);
 
   // Product mutations with Optimistic UI updates
   const handleAddProduct = async (newProduct: Omit<Product, "id">) => {
@@ -530,6 +588,38 @@ export default function App() {
             >
               Hemen Plan Seç
             </button>
+          </div>
+        )}
+
+        {/* Email Verification Banner */}
+        {user && !user.isDemo && auth.currentUser && !auth.currentUser.emailVerified && !dismissEmailVerification && (
+          <div className="bg-amber-500/15 border-b border-amber-500/30 text-amber-200 p-2.5 px-4 sm:px-6 flex flex-wrap items-center justify-between text-xs font-medium z-10 gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Mail className="w-4 h-4 text-amber-400 flex-shrink-0" />
+              <span className="truncate">
+                {verificationStatusMsg || `E-posta adresiniz (${auth.currentUser.email || user.email}) henüz doğrulanmadı. Hesap güvenliğiniz için gelen kutunuzu kontrol edin.`}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {!verificationStatusMsg && (
+                <button
+                  type="button"
+                  disabled={resendingVerification}
+                  onClick={handleResendEmailVerification}
+                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/30 rounded-lg text-[11px] font-bold transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {resendingVerification ? "Gönderiliyor..." : "Tekrar Gönder"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setDismissEmailVerification(true)}
+                className="p-1 text-amber-400 hover:text-white rounded-lg transition-colors"
+                title="Kapat"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         )}
 

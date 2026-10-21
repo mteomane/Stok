@@ -107,6 +107,7 @@ export interface ProductRepository {
   update(productId: string, updates: Partial<Product>, uid?: string): Promise<void>;
   delete(productId: string, uid?: string): Promise<void>;
   restore(productId: string, uid?: string): Promise<void>;
+  subscribe?(uid: string, onUpdate: (products: Product[]) => void, onError?: (err: Error) => void, includeArchived?: boolean): () => void;
 }
 
 /**
@@ -118,6 +119,7 @@ export interface SalesRepository {
   create(uid: string, sale: Omit<Sale, "id">): Promise<Sale>;
   processTransaction(uid: string, params: ProcessSaleParams): Promise<Sale>;
   cancelAtomic(uid: string, params: CancelSaleParams): Promise<Sale>;
+  subscribe?(uid: string, onUpdate: (sales: Sale[]) => void, onError?: (err: Error) => void): () => void;
 }
 
 export interface ProcessCustomerPaymentParams {

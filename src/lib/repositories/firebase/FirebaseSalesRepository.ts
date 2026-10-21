@@ -10,7 +10,8 @@ import {
   query, 
   where, 
   orderBy, 
-  runTransaction 
+  runTransaction,
+  onSnapshot 
 } from "firebase/firestore";
 import { getLocal, setLocal, SEED_SALES, SEED_PRODUCTS, SEED_CUSTOMERS, round2, roundQty, logAuditEvent } from "./helpers";
 import { FirebaseUserRepository } from "./FirebaseUserRepository";
@@ -78,6 +79,62 @@ export class FirebaseSalesRepository implements SalesRepository {
       console.error("FirebaseSalesRepository getAll error:", err);
       throw err;
     }
+  }
+
+  /**
+   * Listens for real-time changes to sales receipts strictly within the caller's verified tenant.
+   * Enables immediate multi-device synchronization across desktops and phones.
+   */
+  subscribe(
+    uid: string,
+    onUpdate: (sales: Sale[]) => void,
+    onError?: (err: Error) => void
+  ): () => void {
+    const validUid = assertAuthenticated(uid, "SalesRepository.subscribe");
+    if (isDemoUser(validUid)) {
+      const list = getLocal<Sale[]>("stokpro_demo_sales", SEED_SALES);
+      const sorted = list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      onUpdate(sorted);
+      return () => {};
+    }
+
+    let isUnsubscribed = false;
+    let unsubSnapshot: (() => void) | null = null;
+
+    this.userRepo.getOrCreateContext(validUid).then((context) => {
+      if (isUnsubscribed) return;
+      const q = query(
+        collection(this.db, "sales"),
+        where("tenantId", "==", context.tenantId)
+      );
+
+      unsubSnapshot = onSnapshot(
+        q,
+        (snapshot) => {
+          const sales: Sale[] = [];
+          snapshot.forEach((docSnap) => {
+            sales.push({ id: docSnap.id, ...docSnap.data() } as Sale);
+          });
+          const sorted = sales.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          memoryCache.set(`sales_${context.tenantId}`, sorted);
+          onUpdate(sorted);
+        },
+        (err) => {
+          console.error("FirebaseSalesRepository subscribe onSnapshot error:", err);
+          if (onError) onError(err);
+        }
+      );
+    }).catch((err) => {
+      console.error("FirebaseSalesRepository subscribe context error:", err);
+      if (onError) onError(err);
+    });
+
+    return () => {
+      isUnsubscribed = true;
+      if (unsubSnapshot) {
+        unsubSnapshot();
+      }
+    };
   }
 
   async create(uid: string, sale: Omit<Sale, "id">): Promise<Sale> {
@@ -570,12 +627,10 @@ export class FirebaseSalesRepository implements SalesRepository {
           const paymentDocId = `${saleRef.id}_pay`;
           const paymentRef = doc(this.db, "payments", paymentDocId);
 
-          const paymentData: Payment = {
+          const paymentData: any = {
             id: paymentDocId,
             tenantId: context.tenantId,
             userId: uid,
-            customerId: customerId || undefined,
-            customerName: customerData ? customerData.name : (customerId ? undefined : "Peşin / Anonim Müşteri"),
             type: "incoming",
             amount: paidAmountVal,
             paymentMethod: normalizedMethod,
@@ -585,6 +640,9 @@ export class FirebaseSalesRepository implements SalesRepository {
               : `Peşin Satış Tahsilatı (Fiş: #${saleRef.id})`,
             receiptNo: saleRef.id
           };
+          if (customerId) paymentData.customerId = customerId;
+          if (customerData?.name) paymentData.customerName = customerData.name;
+          else if (!customerId) paymentData.customerName = "Peşin / Anonim Müşteri";
 
           transaction.set(paymentRef, paymentData);
         }

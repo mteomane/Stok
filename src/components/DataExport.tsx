@@ -126,6 +126,14 @@ export function DataExport({ companyName, tenantId }: DataExportProps) {
           data: archive.data
         })
       });
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        setCloudBackupStatus({
+          status: "failed",
+          message: "Statik Firebase Spark ortamında sunucu API'si devre dışıdır. Lütfen yukarıdaki 'Tam Şirket Veri Tabanı Yedeği İndir (.json)' butonunu kullanarak 0 TL maliyetle yerel güvenli tam yedek alınız."
+        });
+        return;
+      }
       const data = await res.json();
       if (data.status === "success") {
         setCloudBackupStatus({

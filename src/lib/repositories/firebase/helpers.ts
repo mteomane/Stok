@@ -9,6 +9,7 @@ import {
 } from "../../../types";
 import { db } from "../../firebase";
 import { collection, addDoc, Firestore } from "firebase/firestore";
+import { FirebaseUserRepository } from "./FirebaseUserRepository";
 
 export function round2(num: number): number {
   return Math.round((num + Number.EPSILON) * 100) / 100;
@@ -245,9 +246,25 @@ export async function logAuditEvent(uid: string, event: {
   details?: Record<string, any>;
 }, customDb?: Firestore): Promise<void> {
   const timestamp = new Date().toISOString();
-  const logEntry: AuditLog = {
+
+  let resolvedTenantId = event.companyId;
+  if (!resolvedTenantId && !isDemoUser(uid)) {
+    try {
+      const userRepo = new FirebaseUserRepository(customDb);
+      const ctx = await userRepo.getOrCreateContext(uid);
+      resolvedTenantId = ctx.tenantId;
+    } catch {
+      // Fallback for initial bootstrap registration before user profile is created
+      resolvedTenantId = uid;
+    }
+  }
+
+  const finalTenantId = resolvedTenantId || uid;
+
+  const logEntry: any = {
+    tenantId: finalTenantId,
     userId: uid,
-    companyId: event.companyId || uid,
+    companyId: finalTenantId,
     action: event.action,
     entityType: event.entityType,
     entityId: event.entityId,
@@ -268,3 +285,4 @@ export async function logAuditEvent(uid: string, event: {
     console.warn("Audit log notice:", err);
   }
 }
+

@@ -12,7 +12,8 @@ import {
   writeBatch,
   query, 
   where,
-  limit
+  limit,
+  onSnapshot
 } from "firebase/firestore";
 import { memoryCache } from "../../cache";
 import { getLocal, setLocal, SEED_PRODUCTS, logAuditEvent, roundQty, round2 } from "./helpers";
@@ -63,6 +64,61 @@ export class FirebaseProductRepository implements ProductRepository {
       console.error("FirebaseProductRepository getAll error:", err);
       throw err;
     }
+  }
+
+  /**
+   * Listens for real-time changes to products strictly within the caller's verified tenant.
+   * Enables immediate multi-device synchronization (e.g. desktop and mobile).
+   */
+  subscribe(
+    uidParam: string,
+    onUpdate: (products: Product[]) => void,
+    onError?: (err: Error) => void,
+    includeArchived = false
+  ): () => void {
+    const validUid = assertAuthenticated(uidParam, "ProductRepository.subscribe");
+    if (isDemoUser(validUid)) {
+      const list = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
+      onUpdate(includeArchived ? list : list.filter(p => p.isActive !== false));
+      return () => {};
+    }
+
+    let isUnsubscribed = false;
+    let unsubSnapshot: (() => void) | null = null;
+
+    this.userRepo.getOrCreateContext(validUid).then((context) => {
+      if (isUnsubscribed) return;
+      const q = query(
+        collection(this.db, "products"),
+        where("tenantId", "==", context.tenantId)
+      );
+
+      unsubSnapshot = onSnapshot(
+        q,
+        (snapshot) => {
+          const prods: Product[] = [];
+          snapshot.forEach((docSnap) => {
+            prods.push({ id: docSnap.id, ...docSnap.data() } as Product);
+          });
+          memoryCache.set(`products_${context.tenantId}`, prods);
+          onUpdate(includeArchived ? prods : prods.filter(p => p.isActive !== false));
+        },
+        (err) => {
+          console.error("FirebaseProductRepository subscribe onSnapshot error:", err);
+          if (onError) onError(err);
+        }
+      );
+    }).catch((err) => {
+      console.error("FirebaseProductRepository subscribe context error:", err);
+      if (onError) onError(err);
+    });
+
+    return () => {
+      isUnsubscribed = true;
+      if (unsubSnapshot) {
+        unsubSnapshot();
+      }
+    };
   }
 
   async getById(id: string, uidParam?: string): Promise<Product | null> {
@@ -312,13 +368,17 @@ export class FirebaseProductRepository implements ProductRepository {
     const initialProduct: Omit<Product, "id"> = {
       ...product,
       sku: autoSku,
-      barcode: product.barcode?.trim() || undefined,
       metadata: synced.metadata,
       attributes: synced.attributes,
       unit: product.unit || "Adet",
       tenantId: context.tenantId,
       isActive: true
     };
+    if (product.barcode && product.barcode.trim()) {
+      initialProduct.barcode = product.barcode.trim();
+    } else {
+      delete (initialProduct as any).barcode;
+    }
 
     if (isDemoUser(validUid)) {
       const list = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
@@ -475,6 +535,7 @@ export class FirebaseProductRepository implements ProductRepository {
       ? assertAuthenticated(uidParam, "ProductRepository.update") 
       : getAuthenticatedUid("ProductRepository.update");
 
+    const context = await this.userRepo.getOrCreateContext(validUid);
     memoryCache.invalidate("products_");
 
     let normalizedUpdates = { ...updates };
@@ -497,6 +558,7 @@ export class FirebaseProductRepository implements ProductRepository {
         action: "PRODUCT_UPDATED",
         entityType: "product",
         entityId: productId,
+        companyId: context.tenantId,
         details: {
           summary: updates.stock !== undefined ? `Stok güncellendi: ${prev?.stock} -> ${updates.stock}` : "Ürün bilgileri güncellendi",
           previousStock: prev?.stock,
@@ -514,6 +576,7 @@ export class FirebaseProductRepository implements ProductRepository {
         action: "PRODUCT_UPDATED",
         entityType: "product",
         entityId: productId,
+        companyId: context.tenantId,
         details: { summary: "Ürün bilgileri güncellendi (Firebase)" }
       }, this.db);
     } catch (err) {
@@ -543,6 +606,7 @@ export class FirebaseProductRepository implements ProductRepository {
         action: "PRODUCT_DELETED",
         entityType: "product",
         entityId: productId,
+        companyId: context.tenantId,
         details: { summary: "Ürün silindi (Arşive alındı - Soft Delete)" }
       });
       return;
@@ -559,6 +623,7 @@ export class FirebaseProductRepository implements ProductRepository {
         action: "PRODUCT_DELETED",
         entityType: "product",
         entityId: productId,
+        companyId: context.tenantId,
         details: { summary: "Ürün silindi (Arşive alındı - Soft Delete)" }
       }, this.db);
     } catch (err) {
@@ -588,6 +653,7 @@ export class FirebaseProductRepository implements ProductRepository {
         action: "PRODUCT_RESTORED",
         entityType: "product",
         entityId: productId,
+        companyId: context.tenantId,
         details: { summary: "Ürün arşivden geri yüklendi" }
       });
       return;
@@ -604,6 +670,7 @@ export class FirebaseProductRepository implements ProductRepository {
         action: "PRODUCT_RESTORED",
         entityType: "product",
         entityId: productId,
+        companyId: context.tenantId,
         details: { summary: "Ürün arşivden geri yüklendi" }
       }, this.db);
     } catch (err) {

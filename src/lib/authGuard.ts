@@ -19,6 +19,13 @@ export function isProductionEnvironment(): boolean {
   if (typeof process !== "undefined" && process.env && process.env.NODE_ENV === "production") {
     return true;
   }
+  // Browser live domain protection: Cloud Run (.run.app) or any non-localhost domain
+  if (typeof window !== "undefined" && window.location) {
+    const host = window.location.hostname;
+    if (host && !host.includes("localhost") && !host.includes("127.0.0.1") && !host.includes("0.0.0.0")) {
+      return true;
+    }
+  }
   return false;
 }
 

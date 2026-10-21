@@ -20,16 +20,20 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
-    // 3. User's verified tenant ID (falls back to auth.uid for backward compatibility)
+    // 3. User's verified tenant ID
     function getUserTenantId() {
-      return hasUserDoc() ? getUserDoc().tenantId : request.auth.uid;
+      return hasUserDoc() && ('tenantId' in getUserDoc()) ? getUserDoc().tenantId : request.auth.uid;
     }
 
     // 4. Is the caller a verified member of this tenant?
+    // Invariant: If a user has a profile document in users/{uid}, their tenantId
+    // is strictly determined by that profile document. Only un-profiled users
+    // (during initial registration bootstrap) may use request.auth.uid.
     function isTenantMember(tId) {
-      return isAuthenticated() && (
-        tId == getUserTenantId() ||
-        tId == request.auth.uid
+      return isAuthenticated() && tId != null && (
+        hasUserDoc() && ('tenantId' in getUserDoc())
+          ? tId == getUserDoc().tenantId
+          : tId == request.auth.uid
       );
     }
 
@@ -38,35 +42,53 @@ service cloud.firestore {
       return isAuthenticated() && (
         request.auth.uid == userId ||
         isTenantMember(userId) ||
-        (request.auth.token.companyId != null && request.auth.token.companyId == userId)
+        ('companyId' in request.auth.token && request.auth.token.companyId == userId)
       );
     }
 
     // 6. Is the existing document owned by the caller's tenant/account?
+    // Invariant: For multi-tenant documents (having tenantId), caller MUST be a verified member of tenantId.
+    // Client-supplied userId CANNOT override a foreign tenantId!
     function isDocOwner() {
-      return isAuthenticated() && (
-        resource == null ||
-        (resource.data.tenantId != null && isTenantMember(resource.data.tenantId)) ||
-        (resource.data.userId == request.auth.uid) ||
-        (request.auth.token.companyId != null && resource.data.userId == request.auth.token.companyId)
+      return isAuthenticated() && resource != null && (
+        ('tenantId' in resource.data) && resource.data.tenantId != null
+          ? isTenantMember(resource.data.tenantId)
+          : (
+              ('userId' in resource.data && resource.data.userId == request.auth.uid) ||
+              ('companyId' in request.auth.token && 'userId' in resource.data && resource.data.userId == request.auth.token.companyId)
+            )
       );
     }
 
-    // 7. For create: Is the incoming document strictly tied to caller's tenant?
-    // Prevents inserting records on behalf of other tenants.
+    // 7. For create: Is the incoming document strictly tied to caller's verified tenant?
+    // Invariant: Multi-tenant collections REQUIRE a non-null tenantId matching caller's verified tenant membership.
+    // A caller's userId CANNOT be used to inject documents into a foreign tenant!
     function willBeDocOwner() {
-      return isAuthenticated() && (
-        (request.resource.data.tenantId != null && isTenantMember(request.resource.data.tenantId)) ||
-        (request.resource.data.userId == request.auth.uid) ||
-        (request.auth.token.companyId != null && request.resource.data.userId == request.auth.token.companyId)
-      );
+      return isAuthenticated() &&
+        ('tenantId' in request.resource.data) &&
+        request.resource.data.tenantId != null &&
+        isTenantMember(request.resource.data.tenantId) &&
+        (
+          !('userId' in request.resource.data) ||
+          request.resource.data.userId == null ||
+          request.resource.data.userId == request.auth.uid ||
+          isTenantMember(request.resource.data.userId)
+        );
     }
 
     // 8. For update: Document must be currently owned by caller AND ownership must NOT be reassigned.
     function preservesDocOwnership() {
       return isDocOwner() && (
-        (resource.data.userId == null || request.resource.data.userId == resource.data.userId) &&
-        (resource.data.tenantId == null || request.resource.data.tenantId == resource.data.tenantId)
+        ('tenantId' in resource.data) && resource.data.tenantId != null
+          ? (('tenantId' in request.resource.data) && request.resource.data.tenantId == resource.data.tenantId)
+          : (!('tenantId' in request.resource.data) || request.resource.data.tenantId == null || isTenantMember(request.resource.data.tenantId))
+      ) && (
+        !('userId' in resource.data) ||
+        resource.data.userId == null ||
+        !('userId' in request.resource.data) ||
+        request.resource.data.userId == null ||
+        request.resource.data.userId == resource.data.userId ||
+        isTenantMember(request.resource.data.userId)
       );
     }
 
@@ -78,7 +100,7 @@ service cloud.firestore {
     // 9. Is caller an Owner or Admin of their tenant?
     function isTenantAdminOrOwner() {
       return isAuthenticated() && (
-        hasUserDoc()
+        hasUserDoc() && ('role' in getUserDoc())
           ? (getUserDoc().role == 'owner' || getUserDoc().role == 'admin')
           : (request.auth.uid == getUserTenantId())
       );
@@ -87,8 +109,8 @@ service cloud.firestore {
     // 10. Detects whether an update is attempting a soft-delete (setting isActive to false or populating deletedAt)
     function isSoftDeleteAttempt() {
       return (
-        (request.resource.data.isActive == false && (resource.data.isActive == null || resource.data.isActive == true)) ||
-        (request.resource.data.deletedAt != null && resource.data.deletedAt == null)
+        (('isActive' in request.resource.data) && request.resource.data.isActive == false && (!('isActive' in resource.data) || resource.data.isActive == true)) ||
+        (('deletedAt' in request.resource.data) && request.resource.data.deletedAt != null && (!('deletedAt' in resource.data) || resource.data.deletedAt == null))
       );
     }
 
@@ -102,7 +124,7 @@ service cloud.firestore {
       allow create: if isAuthenticated() && (request.auth.uid == request.resource.data.ownerUid || tenantId == request.auth.uid);
       allow update: if isTenantMember(tenantId) && isTenantAdminOrOwner() && (
         // Protect plan attribute from client-side tampering
-        resource.data.plan == null || request.resource.data.plan == resource.data.plan
+        !('plan' in resource.data) || resource.data.plan == null || request.resource.data.plan == resource.data.plan
       );
       allow delete: if false;
     }
@@ -111,17 +133,21 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isAuthenticated() && (
         request.auth.uid == userId ||
-        (resource.data.tenantId != null && isTenantMember(resource.data.tenantId))
+        (('tenantId' in resource.data) && resource.data.tenantId != null && isTenantMember(resource.data.tenantId))
       );
       // Prevent unauthorized role self-elevation on document creation
       allow create: if isAuthenticated() && request.auth.uid == userId && (
-        request.resource.data.tenantId == request.auth.uid ||
-        (request.resource.data.role != 'owner' && request.resource.data.role != 'admin') ||
+        (('tenantId' in request.resource.data) && request.resource.data.tenantId == request.auth.uid) ||
+        (!('role' in request.resource.data) || (request.resource.data.role != 'owner' && request.resource.data.role != 'admin')) ||
         isTenantAdminOrOwner()
       );
       allow update: if isAuthenticated() && (
-        (request.auth.uid == userId && request.resource.data.tenantId == resource.data.tenantId && request.resource.data.role == resource.data.role) ||
-        (isTenantMember(resource.data.tenantId) && isTenantAdminOrOwner())
+        (
+          request.auth.uid == userId &&
+          (('tenantId' in request.resource.data) && ('tenantId' in resource.data) && request.resource.data.tenantId == resource.data.tenantId) &&
+          (('role' in request.resource.data) && ('role' in resource.data) && request.resource.data.role == resource.data.role)
+        ) ||
+        (('tenantId' in resource.data) && isTenantMember(resource.data.tenantId) && isTenantAdminOrOwner())
       );
       allow delete: if false;
     }
@@ -132,7 +158,8 @@ service cloud.firestore {
 
     // Products & Fabric Rolls
     match /products/{docId} {
-      allow read: if isDocOwner();
+      allow get: if isDocOwner();
+      allow list: if isDocOwner();
       allow create: if willBeDocOwner();
       // Regular updates (e.g. POS stock deduction) allowed for all tenant members;
       // Soft-delete attempts (isActive: false / deletedAt) strictly restricted to Owner / Admin!
@@ -143,7 +170,9 @@ service cloud.firestore {
 
     // Sales Logs & Fişler
     match /sales/{docId} {
-      allow read: if isDocOwner();
+      // Idempotency read: Non-existent document check strictly restricted to caller's verified tenant prefix
+      allow get: if isDocOwner() || (resource == null && isAuthenticated() && docId.matches('^' + getUserTenantId() + '_.*'));
+      allow list: if isDocOwner();
       allow create: if willBeDocOwner();
       // Immutable core financial fields (tenantId, totalAmount, items)
       // Transitioning status to 'İptal Edildi' strictly requires Tenant Admin / Owner
@@ -158,13 +187,14 @@ service cloud.firestore {
         );
       // Hard delete blocked if order/sale has un-restored stock deductions
       allow delete: if isDocOwner() && isTenantAdminOrOwner() && (
-        resource.data.stockDeducted != true || resource.data.stockRestored == true
+        !('stockDeducted' in resource.data) || resource.data.stockDeducted != true || (('stockRestored' in resource.data) && resource.data.stockRestored == true)
       );
     }
 
     // Customers & CRM Ledgers
     match /customers/{docId} {
-      allow read: if isDocOwner();
+      allow get: if isDocOwner();
+      allow list: if isDocOwner();
       allow create: if willBeDocOwner();
       allow update: if preservesDocOwnership();
       // Hard delete blocked if customer has active outstanding debt/balance
@@ -175,7 +205,9 @@ service cloud.firestore {
 
     // Orders & Waybills
     match /orders/{docId} {
-      allow read: if isDocOwner();
+      // Idempotency read: Non-existent document check strictly restricted to caller's verified tenant prefix
+      allow get: if isDocOwner() || (resource == null && isAuthenticated() && docId.matches('^' + getUserTenantId() + '_.*'));
+      allow list: if isDocOwner();
       allow create: if willBeDocOwner();
       // Regular updates allowed for tenant members; transitioning status to 'İptal Edildi' strictly requires Tenant Admin / Owner
       allow update: if preservesDocOwnership() &&
@@ -187,13 +219,14 @@ service cloud.firestore {
         );
       // Hard delete strictly restricted to Tenant Admin / Owner AND blocked if order has un-restored stock deductions
       allow delete: if isDocOwner() && isTenantAdminOrOwner() && (
-        resource.data.stockDeducted != true || resource.data.stockRestored == true
+        !('stockDeducted' in resource.data) || resource.data.stockDeducted != true || (('stockRestored' in resource.data) && resource.data.stockRestored == true)
       );
     }
 
     // Suppliers (Tedarikçiler)
     match /suppliers/{docId} {
-      allow read: if isDocOwner();
+      allow get: if isDocOwner();
+      allow list: if isDocOwner();
       allow create: if willBeDocOwner();
       allow update: if preservesDocOwnership();
       allow delete: if isDocOwner() && isTenantAdminOrOwner();
@@ -201,7 +234,8 @@ service cloud.firestore {
 
     // Warehouses (Depolar)
     match /warehouses/{docId} {
-      allow read: if isDocOwner();
+      allow get: if isDocOwner();
+      allow list: if isDocOwner();
       allow create: if willBeDocOwner() && isTenantAdminOrOwner();
       allow update: if preservesDocOwnership() && isTenantAdminOrOwner();
       allow delete: if isDocOwner() && isTenantAdminOrOwner();
@@ -209,7 +243,9 @@ service cloud.firestore {
 
     // Payments (Tahsilat ve Ödemeler)
     match /payments/{docId} {
-      allow read: if isDocOwner();
+      // Idempotency read: Non-existent document check strictly restricted to caller's verified tenant prefix
+      allow get: if isDocOwner() || (resource == null && isAuthenticated() && (docId.matches('^pay_' + getUserTenantId() + '_.*') || docId.matches('^' + getUserTenantId() + '_.*')));
+      allow list: if isDocOwner();
       allow create: if willBeDocOwner();
       allow update: if preservesDocOwnership();
       allow delete: if isDocOwner() && isTenantAdminOrOwner();
@@ -221,13 +257,13 @@ service cloud.firestore {
     // Client-side create, update, and delete are completely denied (write: if false).
     // Plan and payment state mutations can only be made by authorized server-side processes (Firebase Admin SDK).
     match /subscriptions/{docId} {
-      allow read: if isDocOwner() || (resource.data.tenantId != null && isTenantMember(resource.data.tenantId));
+      allow read: if isDocOwner() || (resource != null && ('tenantId' in resource.data) && resource.data.tenantId != null && isTenantMember(resource.data.tenantId));
       allow write: if false;
     }
 
     // Webhook Events (Idempotency and Audit Trail)
     match /webhook_events/{docId} {
-      allow read: if isDocOwner() || (resource.data.tenantId != null && isTenantMember(resource.data.tenantId));
+      allow read: if isDocOwner() || (resource != null && ('tenantId' in resource.data) && resource.data.tenantId != null && isTenantMember(resource.data.tenantId));
       allow create: if isAuthenticated();
       allow update, delete: if false;
     }
@@ -241,7 +277,8 @@ service cloud.firestore {
 
     // Stock Movements (Depo Stok Hareketleri)
     match /stock_movements/{docId} {
-      allow read: if isDocOwner();
+      allow get: if isDocOwner();
+      allow list: if isDocOwner();
       allow create: if willBeDocOwner();
       allow update, delete: if false;
     }

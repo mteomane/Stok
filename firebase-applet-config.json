@@ -1,12 +1,10 @@
 {
-  "projectId": "guvenliyardim-22dff",
-  "appId": "1:786058252298:web:84dbe37ca5896ea8b68ff3",
-  "apiKey": "AIzaSyBFZWOwMlalM_qF-VY-OdkPRY9-BsFatDE",
-  "authDomain": "guvenliyardim-22dff.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-stokvesattakip-f56c5e22-8eb7-4162-ab1f-5ad8221f92dd",
-  "storageBucket": "guvenliyardim-22dff.firebasestorage.app",
-  "messagingSenderId": "786058252298",
-  "measurementId": "",
-  "oAuthClientId": "786058252298-n19meq33kjon8l8oc85mjtg2ujsg0uv9.apps.googleusercontent.com",
-  "recaptchaSiteKey": ""
+  "projectId": "stok-pro-911b4",
+  "appId": "1:995564398410:web:b1d389890e581379f1c3b3",
+  "apiKey": "AIzaSyD4gSodM19AkXt6F29AgohGEO9mYHoCBwY",
+  "authDomain": "stok-pro-911b4.firebaseapp.com",
+  "storageBucket": "stok-pro-911b4.firebasestorage.app",
+  "messagingSenderId": "995564398410",
+  "measurementId": "G-Q9N3HSJ7HD",
+  "firestoreDatabaseId": "(default)"
 }

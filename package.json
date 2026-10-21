@@ -8,12 +8,15 @@
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs && tsc -p functions",
     "start": "node dist/server.cjs",
     "lint": "tsc --noEmit",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-stok-satis-test \"npx tsx scripts/test_firestore_rules.ts\"",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-stok-pro-rules-test \"npx tsx scripts/test_firestore_rules.ts\"",
     "test:integration": "firebase emulators:exec --only firestore --project demo-stok-satis-test \"npx tsx scripts/test_firestore_integration.ts\"",
     "test:repositories": "firebase emulators:exec --only firestore --project demo-stok-satis-test \"npx tsx scripts/test_production_repositories.ts\"",
     "test:backup": "tsx scripts/test_backup_security.ts",
     "test:cloud_backup": "tsx scripts/test_cloud_backup.ts",
     "test:quick_product": "tsx scripts/test_quick_product_mobile.ts",
+    "test:pilot": "tsx scripts/test_pilot_readiness.ts",
+    "test:config": "tsx scripts/test_firebase_stokpro_config.ts",
+    "test:security": "tsx scripts/test_tenant_isolation_security.ts",
     "test:emulator": "firebase emulators:exec --only firestore --project demo-stok-satis-test \"npx tsx scripts/test_firestore_rules.ts && npx tsx scripts/test_firestore_integration.ts && npx tsx scripts/test_production_repositories.ts\""
   },
   "dependencies": {
