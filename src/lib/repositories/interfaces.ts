@@ -148,6 +148,7 @@ export interface CustomerRepository {
   update(customerId: string, updates: Partial<Customer>): Promise<Customer | void>;
   delete(customerId: string): Promise<void>;
   processPaymentTransaction(uid: string, params: ProcessCustomerPaymentParams): Promise<ProcessCustomerPaymentResult>;
+  subscribe?(uid: string, onUpdate: (customers: Customer[]) => void, onError?: (err: Error) => void): () => void;
 }
 
 /**

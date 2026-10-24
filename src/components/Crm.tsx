@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { Customer } from "../types";
 import { auth } from "../lib/firebase";
-import { getCustomers, addCustomer, updateCustomer, deleteCustomer, processCustomerPayment } from "../lib/firestoreService";
+import { getCustomers, addCustomer, updateCustomer, deleteCustomer, processCustomerPayment, subscribeCustomers } from "../lib/firestoreService";
 import { exportService } from "../lib/export/ExportService";
 import { triggerFileDownload } from "../lib/export/fileDownload";
 
@@ -91,7 +91,28 @@ export function Crm({ onRefreshData }: CrmProps) {
   };
 
   useEffect(() => {
-    fetchCustomers();
+    const uid = auth.currentUser?.uid;
+    if (!uid || uid === "demo-user") {
+      fetchCustomers();
+      return;
+    }
+
+    setIsLoading(true);
+    const unsubscribe = subscribeCustomers(
+      uid,
+      (realtimeCustomers) => {
+        setCustomers(realtimeCustomers);
+        setIsLoading(false);
+      },
+      (err) => {
+        console.warn("Realtime customer sync notice:", err);
+        fetchCustomers();
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   const handleAddSubmit = async (e: React.FormEvent) => {

@@ -12,7 +12,8 @@ import {
   deleteDoc, 
   query, 
   where,
-  runTransaction
+  runTransaction,
+  onSnapshot
 } from "firebase/firestore";
 import { getLocal, setLocal, SEED_CUSTOMERS, round2, logAuditEvent } from "./helpers";
 import { FirebaseUserRepository } from "./FirebaseUserRepository";
@@ -58,6 +59,60 @@ export class FirebaseCustomerRepository implements CustomerRepository {
       console.error("FirebaseCustomerRepository getAll error:", err);
       throw err;
     }
+  }
+
+  /**
+   * Listens for real-time customer and debt balance updates strictly within caller's tenant.
+   * Keeps CRM balances synchronized across mobile and desktop devices.
+   */
+  subscribe(
+    uid: string,
+    onUpdate: (customers: Customer[]) => void,
+    onError?: (err: Error) => void
+  ): () => void {
+    const validUid = assertAuthenticated(uid, "CustomerRepository.subscribe");
+    if (isDemoUser(validUid)) {
+      const data = getLocal<Customer[]>("stokpro_demo_customers", SEED_CUSTOMERS);
+      onUpdate(data);
+      return () => {};
+    }
+
+    let isUnsubscribed = false;
+    let unsubSnapshot: (() => void) | null = null;
+
+    this.userRepo.getOrCreateContext(validUid).then((context) => {
+      if (isUnsubscribed) return;
+      const q = query(
+        collection(this.db, "customers"),
+        where("tenantId", "==", context.tenantId)
+      );
+
+      unsubSnapshot = onSnapshot(
+        q,
+        (snapshot) => {
+          const customers: Customer[] = [];
+          snapshot.forEach((docSnap) => {
+            customers.push({ id: docSnap.id, ...docSnap.data() } as Customer);
+          });
+          memoryCache.set(`customers_${context.tenantId}`, customers);
+          onUpdate(customers);
+        },
+        (err) => {
+          console.error("FirebaseCustomerRepository subscribe onSnapshot error:", err);
+          if (onError) onError(err);
+        }
+      );
+    }).catch((err) => {
+      console.error("FirebaseCustomerRepository subscribe context error:", err);
+      if (onError) onError(err);
+    });
+
+    return () => {
+      isUnsubscribed = true;
+      if (unsubSnapshot) {
+        unsubSnapshot();
+      }
+    };
   }
 
   async getById(id: string): Promise<Customer | null> {

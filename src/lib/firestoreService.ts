@@ -927,6 +927,17 @@ export async function deleteCustomer(customerId: string): Promise<void> {
   return repositories.customers.delete(customerId);
 }
 
+export function subscribeCustomers(
+  uid: string,
+  onUpdate: (customers: Customer[]) => void,
+  onError?: (err: Error) => void
+): () => void {
+  if (repositories.customers.subscribe) {
+    return repositories.customers.subscribe(uid, onUpdate, onError);
+  }
+  return () => {};
+}
+
 export async function processCustomerPayment(
   uid: string, 
   params: ProcessCustomerPaymentParams
