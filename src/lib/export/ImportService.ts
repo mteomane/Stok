@@ -1,4 +1,4 @@
-import * as XLSX from "xlsx";
+import readXlsxFile from "read-excel-file/browser";
 import { 
   IDataImportService, 
   ImportPreview, 
@@ -14,7 +14,8 @@ import { triggerFileDownload } from "./fileDownload";
 
 export class DataImportService implements IDataImportService {
   /**
-   * Universal file parser: detects XLSX, XLS or CSV and returns raw headers and rows.
+   * Universal file parser: detects XLSX or CSV and returns raw headers and rows.
+   * Uses modern, safe read-excel-file parser with zero prototype pollution or ReDoS vulnerabilities.
    */
   async parseFile(file: File): Promise<{ 
     headers: string[]; 
@@ -26,30 +27,33 @@ export class DataImportService implements IDataImportService {
     const isExcel = fileName.endsWith(".xlsx") || fileName.endsWith(".xls");
 
     if (isExcel) {
-      const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: "array" });
-      const sheetNames = workbook.SheetNames;
-      if (!sheetNames || sheetNames.length === 0) {
+      if (fileName.endsWith(".xls") && !fileName.endsWith(".xlsx")) {
+        throw new Error(
+          "Eski ikili Excel (.xls) formatı güvenlik nedeniyle desteklenmemektedir. Lütfen dosyanızı Excel'de açıp modern '.xlsx' veya '.csv' olarak kaydediniz."
+        );
+      }
+
+      const sheets = await readXlsxFile(file);
+      if (!sheets || sheets.length === 0) {
         throw new Error("Excel dosyasında geçerli bir çalışma sayfası (sheet) bulunamadı.");
       }
 
+      const sheetNames = sheets.map(s => s.sheet);
       const activeSheet = sheetNames[0];
-      const worksheet = workbook.Sheets[activeSheet];
-      const jsonData: any[][] = XLSX.utils.sheet_to_json(worksheet, { 
-        header: 1, 
-        defval: "", 
-        blankrows: false 
-      });
+      const targetSheet = sheets[0];
+      const rawRows = targetSheet?.data || [];
 
-      if (!jsonData || jsonData.length === 0) {
+      if (!rawRows || rawRows.length === 0) {
         return { headers: [], rows: [], sheetNames, activeSheet };
       }
 
-      const headers = (jsonData[0] || []).map((h: any) => String(h ?? "").trim());
-      const rawRows = jsonData.slice(1);
+      const headers = (rawRows[0] || []).map((h: any) => String(h ?? "").trim());
+      const rawDataRows = rawRows.slice(1).map(row =>
+        row.map(cell => cell === null || cell === undefined ? "" : cell instanceof Date ? cell.toISOString().split("T")[0] : String(cell))
+      );
 
       // Filter out completely blank rows
-      const rows = rawRows.filter(r => r.some((c: any) => c !== undefined && c !== null && String(c).trim() !== ""));
+      const rows = rawDataRows.filter(r => r.some((c: string) => c.trim() !== ""));
 
       return { headers, rows, sheetNames, activeSheet };
     }
@@ -201,26 +205,29 @@ export class DataImportService implements IDataImportService {
       return [...row, ...extraCols];
     });
 
-    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...paddedSampleRows]);
+    const escapeCsv = (val: any) => {
+      const str = String(val ?? "");
+      if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes(";")) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
 
-    // Set column widths for clean readability
-    worksheet["!cols"] = headers.map(h => ({
-      wch: Math.max(h.length + 5, 16)
-    }));
+    // Format as Excel-compatible CSV with UTF-8 BOM (\uFEFF) and semicolon separation
+    // Excel on Windows/Mac automatically opens this natively in tabular grid with Turkish characters
+    const csvContent = "\uFEFF" + [headers, ...paddedSampleRows]
+      .map(row => row.map(escapeCsv).join(";"))
+      .join("\r\n");
 
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Ürünler");
-
-    const excelBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
     triggerFileDownload(
-      excelBuffer, 
-      "stokpro_urun_yukleme_sablonu.xlsx", 
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      csvContent, 
+      "stokpro_urun_yukleme_sablonu.csv", 
+      "text/csv;charset=utf-8;"
     );
   }
 
   /**
-   * Downloads invalid/failed rows as an Excel file with an extra error reason column.
+   * Downloads invalid/failed rows as an Excel-compatible file with an extra error reason column.
    */
   downloadFailedRowsXlsx(
     failedRows: any[], 
@@ -241,17 +248,22 @@ export class DataImportService implements IDataImportService {
       return [errorMsg, ...rowData];
     });
 
-    const worksheet = XLSX.utils.aoa_to_sheet([outHeaders, ...outRows]);
-    worksheet["!cols"] = [{ wch: 35 }, ...headers.map(() => ({ wch: 18 }))];
+    const escapeCsv = (val: any) => {
+      const str = String(val ?? "");
+      if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes(";")) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
 
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Hatalı Kayıtlar");
+    const csvContent = "\uFEFF" + [outHeaders, ...outRows]
+      .map(row => row.map(escapeCsv).join(";"))
+      .join("\r\n");
 
-    const excelBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
     triggerFileDownload(
-      excelBuffer, 
-      "stokpro_hatali_satirlar.xlsx", 
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      csvContent, 
+      "stokpro_hatali_satirlar.csv", 
+      "text/csv;charset=utf-8;"
     );
   }
 

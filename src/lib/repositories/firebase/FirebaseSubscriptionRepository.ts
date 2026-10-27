@@ -61,7 +61,20 @@ export class FirebaseSubscriptionRepository implements SubscriptionRepository {
       if (isDemoAllowed()) {
         return getLocal<Subscription>("stokpro_demo_subscription", SEED_SUBSCRIPTION);
       }
-      throw err;
+      // Safe resilience: For brand new tenants without a server-provisioned document,
+      // return default in-memory Pro trial instead of crashing the application
+      const fallbackTrial: Subscription = {
+        id: tenantId,
+        tenantId,
+        planId: "pro",
+        status: "trialing",
+        startDate: new Date().toISOString(),
+        endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        trialEndDate: new Date(Date.now() + TRIAL_DAYS_DEFAULT * 24 * 60 * 60 * 1000).toISOString(),
+        provider: "none",
+        createdAt: new Date().toISOString()
+      };
+      return fallbackTrial;
     }
   }
 

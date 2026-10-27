@@ -257,7 +257,9 @@ service cloud.firestore {
     // Client-side create, update, and delete are completely denied (write: if false).
     // Plan and payment state mutations can only be made by authorized server-side processes (Firebase Admin SDK).
     match /subscriptions/{docId} {
-      allow read: if isDocOwner() || (resource != null && ('tenantId' in resource.data) && resource.data.tenantId != null && isTenantMember(resource.data.tenantId));
+      allow get: if (resource != null && (isDocOwner() || (('tenantId' in resource.data) && resource.data.tenantId != null && isTenantMember(resource.data.tenantId)))) ||
+                    (resource == null && isAuthenticated() && (docId == getUserTenantId() || isTenantMember(docId)));
+      allow list: if isDocOwner() || (resource != null && ('tenantId' in resource.data) && resource.data.tenantId != null && isTenantMember(resource.data.tenantId));
       allow write: if false;
     }
 
