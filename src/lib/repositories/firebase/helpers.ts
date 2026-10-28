@@ -23,6 +23,41 @@ export function roundQty(num: number): number {
   return Math.round((num + Number.EPSILON) * 1000) / 1000;
 }
 
+/**
+ * Recursively strips all keys with `undefined` values from an object or array
+ * so that it can be safely written to Firestore (addDoc, setDoc, updateDoc)
+ * without triggering "Unsupported field value: undefined" errors.
+ */
+export function sanitizeFirestorePayload<T extends Record<string, any>>(obj: T): T {
+  if (obj === null || obj === undefined || typeof obj !== "object") {
+    return obj;
+  }
+
+  if (obj instanceof Date) {
+    return obj;
+  }
+
+  if (Array.isArray(obj)) {
+    return obj
+      .filter((item) => item !== undefined)
+      .map((item) => (typeof item === "object" && item !== null ? sanitizeFirestorePayload(item) : item)) as unknown as T;
+  }
+
+  const clean: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === undefined) {
+      continue;
+    }
+    if (value !== null && typeof value === "object" && !(value instanceof Date)) {
+      clean[key] = sanitizeFirestorePayload(value);
+    } else {
+      clean[key] = value;
+    }
+  }
+
+  return clean as T;
+}
+
 export function getLocal<T>(key: string, defaultValue: T): T {
   const storage = typeof window !== "undefined" && window.localStorage 
     ? window.localStorage 
@@ -280,7 +315,8 @@ export async function logAuditEvent(uid: string, event: {
   }
 
   try {
-    await addDoc(collection(customDb || db, "audit_logs"), logEntry);
+    const cleanLogEntry = sanitizeFirestorePayload(logEntry);
+    await addDoc(collection(customDb || db, "audit_logs"), cleanLogEntry);
   } catch (err) {
     console.warn("Audit log notice:", err);
   }

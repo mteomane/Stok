@@ -17,6 +17,7 @@
     "test:pilot": "tsx scripts/test_pilot_readiness.ts",
     "test:config": "tsx scripts/test_firebase_stokpro_config.ts",
     "test:security": "tsx scripts/test_tenant_isolation_security.ts",
+    "test:package_units": "firebase emulators:exec --only firestore --project demo-package-units-test \"npx tsx scripts/test_package_units_regression.ts\"",
     "test:emulator": "firebase emulators:exec --only firestore --project demo-stok-satis-test \"npx tsx scripts/test_firestore_rules.ts && npx tsx scripts/test_firestore_integration.ts && npx tsx scripts/test_production_repositories.ts\""
   },
   "dependencies": {

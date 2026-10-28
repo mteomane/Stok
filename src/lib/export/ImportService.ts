@@ -564,23 +564,31 @@ export class DataImportService implements IDataImportService {
       const parsedProduct: Omit<Product, "id"> = {
         name,
         sku: sku || cleanSku.toUpperCase(),
-        barcode: barcode || undefined,
-        brand: brand || undefined,
         category: category || "Genel",
         price,
-        costPrice: costPrice > 0 ? costPrice : undefined,
         stock,
         minStock,
         unit: unit || "Adet",
-        description: description || undefined,
-        metadata: {
-          ...dynamicAttributes,
-          brand,
-          barcode: barcode || undefined
-        },
         attributes: dynamicAttributes,
+        metadata: {
+          ...dynamicAttributes
+        },
         isActive: true
       };
+      if (barcode) {
+        parsedProduct.barcode = barcode;
+        parsedProduct.metadata!.barcode = barcode;
+      }
+      if (brand) {
+        (parsedProduct as any).brand = brand;
+        parsedProduct.metadata!.brand = brand;
+      }
+      if (costPrice > 0) {
+        parsedProduct.costPrice = costPrice;
+      }
+      if (description) {
+        parsedProduct.description = description;
+      }
 
       rowObj._parsed = parsedProduct;
       rowObj._isDuplicate = isDuplicate;

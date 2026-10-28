@@ -431,21 +431,32 @@ export function Inventory({
     if (isNaN(parsedStock) || parsedStock < 0) return setFormError("Geçerli bir stok miktarı girin.");
 
     try {
-      await onAddProduct({
+      const autoSku = sku.trim() || ("PRD-" + Math.random().toString(36).substring(2, 8).toUpperCase());
+      const productPayload: Omit<Product, "id"> = {
         name: name.trim(),
+        sku: autoSku,
         category: category.trim() || "Genel",
         price: round2(parsedPrice),
         stock: roundQty(parsedStock),
         minStock: !isNaN(parsedMinStock) && parsedMinStock >= 0 ? roundQty(parsedMinStock) : 0,
-        sku: sku.trim() || undefined as any,
-        unit: unit.trim() || undefined,
+        unit: unit.trim() || "Adet",
         attributes,
         metadata: attributes,
-        isPackaged,
-        packageUnitsCount: isPackaged ? parseInt(packageUnitsCount) : undefined,
-        packageUnitName: isPackaged ? packageUnitName.trim() : undefined,
-        subUnitStock: isPackaged ? parseFloat(subUnitStock) : undefined
-      });
+        isPackaged
+      };
+      if (isPackaged) {
+        const count = parseInt(packageUnitsCount, 10);
+        productPayload.packageUnitsCount = !isNaN(count) && count > 0 ? count : 10;
+        if (packageUnitName.trim()) {
+          productPayload.packageUnitName = packageUnitName.trim();
+        }
+        const subStock = parseFloat(subUnitStock);
+        if (!isNaN(subStock)) {
+          productPayload.subUnitStock = subStock;
+        }
+      }
+
+      await onAddProduct(productPayload);
       
       // Reset form
       setName("");
@@ -477,21 +488,32 @@ export function Inventory({
     if (isNaN(editingProduct.stock) || editingProduct.stock < 0) return setFormError("Geçerli bir stok miktarı girin.");
 
     try {
-      await onUpdateProduct(editingProduct.id, {
+      const updatePayload: Partial<Product> = {
         name: editingProduct.name,
         category: editingProduct.category || "Genel",
         price: round2(editingProduct.price),
         stock: roundQty(editingProduct.stock),
         minStock: roundQty(editingProduct.minStock || 0),
-        sku: editingProduct.sku,
-        unit: editingProduct.unit || undefined,
+        unit: editingProduct.unit || "Adet",
         attributes: editingProduct.attributes,
         metadata: editingProduct.metadata || editingProduct.attributes,
-        isPackaged: editingProduct.isPackaged,
-        packageUnitsCount: editingProduct.packageUnitsCount,
-        packageUnitName: editingProduct.packageUnitName,
-        subUnitStock: editingProduct.subUnitStock
-      });
+        isPackaged: Boolean(editingProduct.isPackaged)
+      };
+      if (editingProduct.sku && editingProduct.sku.trim()) {
+        updatePayload.sku = editingProduct.sku.trim();
+      }
+      if (editingProduct.isPackaged) {
+        const count = Number(editingProduct.packageUnitsCount);
+        updatePayload.packageUnitsCount = !isNaN(count) && count > 0 ? count : 1;
+        if (editingProduct.packageUnitName) {
+          updatePayload.packageUnitName = editingProduct.packageUnitName;
+        }
+        if (editingProduct.subUnitStock !== undefined) {
+          updatePayload.subUnitStock = editingProduct.subUnitStock;
+        }
+      }
+
+      await onUpdateProduct(editingProduct.id, updatePayload);
       setEditingProduct(null);
     } catch (err: any) {
       setFormError(err.message || "Ürün güncellenirken bir hata oluştu.");

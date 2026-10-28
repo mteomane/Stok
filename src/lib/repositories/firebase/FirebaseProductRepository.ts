@@ -16,7 +16,7 @@ import {
   onSnapshot
 } from "firebase/firestore";
 import { memoryCache } from "../../cache";
-import { getLocal, setLocal, SEED_PRODUCTS, logAuditEvent, roundQty, round2 } from "./helpers";
+import { getLocal, setLocal, SEED_PRODUCTS, logAuditEvent, roundQty, round2, sanitizeFirestorePayload } from "./helpers";
 import { FirebaseUserRepository } from "./FirebaseUserRepository";
 import { FirebaseSubscriptionRepository } from "./FirebaseSubscriptionRepository";
 import { getPlanConfig, isSubscriptionActive } from "../../subscriptionConfig";
@@ -380,6 +380,30 @@ export class FirebaseProductRepository implements ProductRepository {
       delete (initialProduct as any).barcode;
     }
 
+    // Package Units Handling:
+    // If product is packaged, validate packageUnitsCount (defaulting to 1 if missing/invalid).
+    // If product is NOT packaged, packageUnitsCount, packageUnitName, and subUnitStock MUST NOT exist!
+    if (product.isPackaged === true) {
+      initialProduct.isPackaged = true;
+      const count = Number(product.packageUnitsCount);
+      initialProduct.packageUnitsCount = !isNaN(count) && count > 0 ? Math.floor(count) : 1;
+      if (product.packageUnitName && product.packageUnitName.trim()) {
+        initialProduct.packageUnitName = product.packageUnitName.trim();
+      } else {
+        delete (initialProduct as any).packageUnitName;
+      }
+      if (product.subUnitStock !== undefined && !isNaN(Number(product.subUnitStock))) {
+        initialProduct.subUnitStock = Number(product.subUnitStock);
+      } else {
+        delete (initialProduct as any).subUnitStock;
+      }
+    } else {
+      initialProduct.isPackaged = false;
+      delete (initialProduct as any).packageUnitsCount;
+      delete (initialProduct as any).packageUnitName;
+      delete (initialProduct as any).subUnitStock;
+    }
+
     if (isDemoUser(validUid)) {
       const list = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
       const newId = "P_" + Math.random().toString(36).substring(2, 9).toUpperCase();
@@ -400,14 +424,16 @@ export class FirebaseProductRepository implements ProductRepository {
     }
 
     try {
-      const docRef = await addDoc(collection(this.db, "products"), {
+      const docPayload = sanitizeFirestorePayload({
         ...initialProduct,
         userId: validUid,
         tenantId: context.tenantId,
         createdAt: new Date().toISOString()
       });
 
-      const created = { id: docRef.id, ...initialProduct, tenantId: context.tenantId } as Product;
+      const docRef = await addDoc(collection(this.db, "products"), docPayload);
+
+      const created = { id: docRef.id, ...docPayload } as Product;
       memoryCache.invalidate("products_");
 
       await logAuditEvent(validUid, {
@@ -415,7 +441,7 @@ export class FirebaseProductRepository implements ProductRepository {
         entityType: "product",
         entityId: docRef.id,
         companyId: context.tenantId,
-        details: { name: product.name, sku: product.sku, stock: product.stock, price: product.price }
+        details: { name: product.name, sku: docPayload.sku || initialProduct.sku, stock: product.stock, price: product.price }
       }, this.db);
 
       return created;
@@ -496,7 +522,7 @@ export class FirebaseProductRepository implements ProductRepository {
       chunk.forEach((p) => {
         const synced = syncSectorMetadata({ metadata: p.metadata, attributes: p.attributes });
         const newDocRef = doc(collection(this.db, "products"));
-        const docPayload = {
+        const itemData: any = {
           ...p,
           metadata: synced.metadata,
           attributes: synced.attributes,
@@ -506,6 +532,17 @@ export class FirebaseProductRepository implements ProductRepository {
           isActive: true,
           createdAt: nowIso
         };
+        if (p.isPackaged === true) {
+          itemData.isPackaged = true;
+          const count = Number(p.packageUnitsCount);
+          itemData.packageUnitsCount = !isNaN(count) && count > 0 ? Math.floor(count) : 1;
+        } else {
+          itemData.isPackaged = false;
+          delete itemData.packageUnitsCount;
+          delete itemData.packageUnitName;
+          delete itemData.subUnitStock;
+        }
+        const docPayload = sanitizeFirestorePayload(itemData);
         batch.set(newDocRef, docPayload);
         createdList.push({ id: newDocRef.id, ...docPayload } as Product);
       });
@@ -548,6 +585,15 @@ export class FirebaseProductRepository implements ProductRepository {
       normalizedUpdates.attributes = synced.attributes;
     }
 
+    if (updates.isPackaged === false) {
+      delete (normalizedUpdates as any).packageUnitsCount;
+      delete (normalizedUpdates as any).packageUnitName;
+      delete (normalizedUpdates as any).subUnitStock;
+    } else if (updates.isPackaged === true && updates.packageUnitsCount !== undefined) {
+      const pCount = Number(updates.packageUnitsCount);
+      normalizedUpdates.packageUnitsCount = !isNaN(pCount) && pCount > 0 ? Math.floor(pCount) : 1;
+    }
+
     if (isDemoUser(validUid)) {
       const list = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
       const prev = list.find(p => p.id === productId);
@@ -570,7 +616,8 @@ export class FirebaseProductRepository implements ProductRepository {
 
     try {
       const docRef = doc(this.db, "products", productId);
-      await updateDoc(docRef, normalizedUpdates);
+      const cleanUpdates = sanitizeFirestorePayload(normalizedUpdates);
+      await updateDoc(docRef, cleanUpdates);
 
       await logAuditEvent(validUid, {
         action: "PRODUCT_UPDATED",

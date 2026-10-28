@@ -174,23 +174,38 @@ export function QuickProductModal({
 
     try {
       setIsSubmitting(true);
-      await onAddProduct({
+      const autoSku = sku.trim() || ("PRD-" + Math.random().toString(36).substring(2, 8).toUpperCase());
+      const productPayload: Omit<Product, "id"> = {
         name: cleanName,
-        barcode: barcode.trim() || undefined,
-        sku: sku.trim() || undefined as any,
+        sku: autoSku,
         category: category.trim() || "Genel",
         unit: unit.trim() || "Adet",
         price: round2(parsedPrice),
-        costPrice: parsedCost !== undefined ? round2(parsedCost) : undefined,
         stock: roundQty(parsedStock),
         minStock: !isNaN(parsedMinStock) && parsedMinStock >= 0 ? roundQty(parsedMinStock) : 0,
         attributes,
         metadata: attributes,
-        isPackaged,
-        packageUnitsCount: isPackaged ? parseInt(packageUnitsCount, 10) : undefined,
-        packageUnitName: isPackaged ? packageUnitName.trim() : undefined,
-        subUnitStock: isPackaged ? parseFloat(packageUnitsCount) : undefined
-      });
+        isPackaged
+      };
+      if (barcode.trim()) {
+        productPayload.barcode = barcode.trim();
+      }
+      if (parsedCost !== undefined && !isNaN(parsedCost) && parsedCost >= 0) {
+        productPayload.costPrice = round2(parsedCost);
+      }
+      if (isPackaged) {
+        const count = parseInt(packageUnitsCount, 10);
+        productPayload.packageUnitsCount = !isNaN(count) && count > 0 ? count : 10;
+        if (packageUnitName.trim()) {
+          productPayload.packageUnitName = packageUnitName.trim();
+        }
+        const subStock = parseFloat(packageUnitsCount);
+        if (!isNaN(subStock)) {
+          productPayload.subUnitStock = subStock;
+        }
+      }
+
+      await onAddProduct(productPayload);
 
       onClose();
     } catch (err: any) {
