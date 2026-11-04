@@ -767,48 +767,73 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
               displayedProducts.map((p) => {
                 const isFabric = p.category?.toLowerCase() === "kumaş" || p.category?.toLowerCase() === "kumas" || (p.rolls && p.rolls.length > 0);
                 const hasBoxes = p.boxes && p.boxes.length > 0;
+                const isConfigurable = isFabric || hasBoxes;
 
                 return (
                   <div
                     key={p.id}
                     onClick={() => selectProductToConfigure(p)}
-                    className="bg-white p-3 rounded-xl border border-slate-200 hover:border-indigo-400 hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group active:scale-98"
+                    className="bg-white p-3 rounded-xl border border-slate-200 hover:border-indigo-400 hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group active:scale-98 select-none"
                   >
                     <div>
-                      <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center justify-between mb-1 gap-1">
                         <span className="text-[9px] font-bold uppercase text-slate-400 tracking-wider truncate">
                           {p.category || "Genel"}
                         </span>
-                        {isFabric && (
-                          <span className="text-[9px] bg-indigo-50 text-indigo-700 font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5">
-                            <Scissors className="w-2.5 h-2.5" />
-                            Rulo
-                          </span>
-                        )}
-                        {hasBoxes && (
-                          <span className="text-[9px] bg-amber-50 text-amber-700 font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5">
-                            <Package className="w-2.5 h-2.5" />
-                            Koli
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {!p.barcode && (
+                            <span className="text-[8px] font-bold uppercase text-slate-500 bg-slate-100 px-1 py-0.2 rounded" title="Barkodsuz Ürün">
+                              Barkodsuz
+                            </span>
+                          )}
+                          {isFabric && (
+                            <span className="text-[9px] bg-indigo-50 text-indigo-700 font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                              <Scissors className="w-2.5 h-2.5" />
+                              Rulo
+                            </span>
+                          )}
+                          {hasBoxes && (
+                            <span className="text-[9px] bg-amber-50 text-amber-700 font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                              <Package className="w-2.5 h-2.5" />
+                              Koli
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <h5 className="text-xs font-bold text-slate-800 line-clamp-2 leading-tight group-hover:text-indigo-600 transition-colors">
                         {p.name}
                       </h5>
                       {p.sku && (
-                        <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
+                        <span className="text-[10px] text-slate-400 font-mono block mt-0.5 truncate">
                           {p.sku}
                         </span>
                       )}
                     </div>
 
-                    <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between">
-                      <span className="text-xs font-black text-slate-800">
-                        {formatCurrency(p.price)}
-                      </span>
-                      <span className={`text-[10px] font-bold ${p.stock <= p.minStock ? "text-rose-500" : "text-emerald-600"}`}>
-                        {p.stock} {p.unit || (isFabric ? "m" : "ad")}
-                      </span>
+                    <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between gap-1">
+                      <div>
+                        <span className="text-xs font-black text-slate-800 block">
+                          {formatCurrency(p.price)}
+                        </span>
+                        <span className={`text-[10px] font-bold block ${p.stock <= p.minStock ? "text-rose-500" : "text-emerald-600"}`}>
+                          {p.stock} {p.unit || (isFabric ? "m" : "ad")}
+                        </span>
+                      </div>
+
+                      {!isConfigurable && p.stock > 0 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            addToCart(p, 1);
+                          }}
+                          className="px-2 py-1 bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white rounded-lg text-[10px] font-bold transition-all flex items-center gap-0.5 cursor-pointer shadow-xs active:scale-90"
+                          title="1 Adet Sepete Ekle"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>Ekle</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 );

@@ -15,9 +15,14 @@ import {
   ShoppingBag,
   RefreshCw,
   Clock,
-  Download
+  Download,
+  RotateCcw,
+  CheckCircle2,
+  AlertCircle,
+  XCircle
 } from "lucide-react";
 import { auth } from "../lib/firebase";
+import { cancelSaleAtomic } from "../lib/firestoreService";
 import { ReceiptPrintModal } from "./ReceiptPrintModal";
 import { SalesReportModal } from "./SalesReportModal";
 import { exportService } from "../lib/export/ExportService";
@@ -26,14 +31,19 @@ import { triggerFileDownload } from "../lib/export/fileDownload";
 interface HistoryProps {
   sales: Sale[];
   products?: Product[];
+  onRefreshData?: () => Promise<void>;
+  currentUserRole?: string;
 }
 
 type DatePreset = "all" | "today" | "yesterday" | "7days" | "this_month" | "last_month" | "custom";
 
-export function History({ sales, products }: HistoryProps) {
+export function History({ sales, products, onRefreshData, currentUserRole }: HistoryProps) {
   const [expandedSaleId, setExpandedSaleId] = useState<string | null>(null);
   const [selectedReceiptSale, setSelectedReceiptSale] = useState<Sale | null>(null);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [cancellingSaleId, setCancellingSaleId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
   // Filters state
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
@@ -206,8 +216,73 @@ export function History({ sales, products }: HistoryProps) {
     }
   };
 
+  const handleCancelSale = async (sale: Sale) => {
+    const isAdminOrOwner = !currentUserRole || currentUserRole === "owner" || currentUserRole === "admin";
+    if (!isAdminOrOwner) {
+      alert("Yetkilendirme Hatası: Satış iptali yalnızca 'owner' veya 'admin' yetkisine sahip kullanıcılar tarafından yapılabilir.");
+      return;
+    }
+
+    if (sale.status === "İptal Edildi") {
+      alert("Bu satış fişi zaten iptal edilmiştir.");
+      return;
+    }
+
+    const reason = window.prompt(
+      `#${sale.id} numaralı satışı iptal etmek ve stokları iade etmek istiyor musunuz?\nLütfen iptal/iade nedenini girin:`,
+      "Müşteri iadesi / Hatalı fiş"
+    );
+    if (reason === null) return;
+
+    try {
+      setCancellingSaleId(sale.id);
+      setActionError(null);
+      const uid = auth.currentUser?.uid || "demo-user";
+      await cancelSaleAtomic(uid, {
+        saleId: sale.id,
+        reason: reason.trim() || "Müşteri iadesi",
+        idempotencyKey: `cancel_${sale.id}_${Date.now()}`
+      });
+
+      setActionSuccess(`Satış fişi #${sale.id} başarıyla iptal edildi ve ürün stokları iade edildi!`);
+      if (onRefreshData) {
+        await onRefreshData();
+      }
+      setTimeout(() => setActionSuccess(null), 5000);
+    } catch (err: any) {
+      setActionError(err.message || "Satış iptal edilirken bir hata oluştu.");
+    } finally {
+      setCancellingSaleId(null);
+    }
+  };
+
   return (
     <div className="space-y-4 animate-fade-in">
+      {/* Action Notifications */}
+      {actionSuccess && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-3.5 rounded-xl shadow-xs flex items-center justify-between text-xs font-bold animate-fade-in">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span>{actionSuccess}</span>
+          </div>
+          <button type="button" onClick={() => setActionSuccess(null)} className="p-1 text-emerald-600 hover:text-emerald-800">
+            <XCircle className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {actionError && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 p-3.5 rounded-xl shadow-xs flex items-center justify-between text-xs font-bold animate-fade-in">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+            <span>{actionError}</span>
+          </div>
+          <button type="button" onClick={() => setActionError(null)} className="p-1 text-rose-600 hover:text-rose-800">
+            <XCircle className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Top Header Card */}
       <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -410,12 +485,15 @@ export function History({ sales, products }: HistoryProps) {
 
           {paginatedSales.map((sale) => {
             const isExpanded = expandedSaleId === sale.id;
+            const isCancelled = sale.status === "İptal Edildi";
             const itemsCount = sale.items.reduce((sum, item) => sum + item.quantity, 0);
 
             return (
               <div
                 key={sale.id}
-                className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden transition-all hover:border-slate-300"
+                className={`bg-white rounded-xl border shadow-sm overflow-hidden transition-all hover:border-slate-300 ${
+                  isCancelled ? "border-rose-200 bg-rose-50/10" : "border-slate-200"
+                }`}
               >
                 {/* Sale Row Header */}
                 <div
@@ -423,17 +501,29 @@ export function History({ sales, products }: HistoryProps) {
                   className="p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 cursor-pointer select-none bg-slate-50/30 hover:bg-slate-50/70 transition-colors"
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center flex-shrink-0 font-bold">
+                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 font-bold ${
+                      isCancelled ? "bg-rose-100 text-rose-600" : "bg-indigo-50 text-indigo-600"
+                    }`}>
                       <Receipt className="w-5 h-5" />
                     </div>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-slate-800 truncate font-mono">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-sm font-bold truncate font-mono ${isCancelled ? "text-slate-500 line-through" : "text-slate-800"}`}>
                           FİŞ: #{sale.id}
                         </span>
+                        {isCancelled && (
+                          <span className="text-[10px] font-black uppercase text-rose-700 bg-rose-100 border border-rose-200 rounded px-1.5 py-0.5">
+                            İptal Edildi
+                          </span>
+                        )}
                         {sale.customerName && (
                           <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 rounded px-1.5 py-0.5">
                             {sale.customerName}
+                          </span>
+                        )}
+                        {sale.paymentMethod && (
+                          <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
+                            {sale.paymentMethod}
                           </span>
                         )}
                       </div>
@@ -446,7 +536,7 @@ export function History({ sales, products }: HistoryProps) {
 
                   <div className="flex items-center justify-between sm:justify-end gap-3 sm:gap-6 w-full sm:w-auto">
                     <div className="text-left sm:text-right">
-                      <span className="text-sm font-bold text-emerald-600 block">
+                      <span className={`text-sm font-bold block ${isCancelled ? "text-slate-400 line-through" : "text-emerald-600"}`}>
                         {formatCurrency(sale.totalAmount)}
                       </span>
                       <span className="text-[10px] font-bold text-slate-400 uppercase font-mono">
@@ -475,8 +565,8 @@ export function History({ sales, products }: HistoryProps) {
 
                 {/* Sale Items Detail Expansion */}
                 {isExpanded && (
-                  <div className="border-t border-slate-200 bg-white p-4 animate-fade-in">
-                    <div className="flex justify-between items-center mb-2.5">
+                  <div className="border-t border-slate-200 bg-white p-4 animate-fade-in space-y-3">
+                    <div className="flex justify-between items-center mb-1">
                       <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">
                         Satılan Ürünler Listesi
                       </span>
@@ -489,6 +579,7 @@ export function History({ sales, products }: HistoryProps) {
                         Fiş Detayını Gör & Yazdır (PDF)
                       </button>
                     </div>
+
                     <div className="overflow-x-auto">
                       <table className="w-full text-left text-xs border-collapse">
                         <thead>
@@ -534,6 +625,32 @@ export function History({ sales, products }: HistoryProps) {
                           })}
                         </tbody>
                       </table>
+                    </div>
+
+                    {/* Sale Action Footer: Cancellation / Refund */}
+                    <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 bg-slate-50/60 p-3 rounded-xl">
+                      {isCancelled ? (
+                        <div className="flex items-center gap-2 text-rose-700 text-xs font-semibold">
+                          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                          <span>Bu satış iptal edilmiştir. Ürün stokları otomatik olarak iade edilmiştir. {sale.cancelReason ? `(Neden: ${sale.cancelReason})` : ""}</span>
+                        </div>
+                      ) : (
+                        <>
+                          <span className="text-xs text-slate-400 font-medium">
+                            Hatalı fiş veya müşteri iadesi durumunda satışı iptal edebilirsiniz.
+                          </span>
+                          <button
+                            type="button"
+                            disabled={cancellingSaleId === sale.id}
+                            onClick={() => handleCancelSale(sale)}
+                            className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer shadow-xs disabled:opacity-50"
+                            title="Satışı iptal et ve stokları iade et"
+                          >
+                            <RotateCcw className={`w-3.5 h-3.5 ${cancellingSaleId === sale.id ? "animate-spin" : "text-rose-600"}`} />
+                            <span>{cancellingSaleId === sale.id ? "İptal Ediliyor..." : "Satışı İptal / İade Et"}</span>
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 )}

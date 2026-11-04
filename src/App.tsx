@@ -773,7 +773,14 @@ export default function App() {
                     <QRScanner onScanSuccess={handleScanSuccess} />
                   </div>
                 )}
-                {activeTab === "history" && <History sales={sales} products={products} />}
+                {activeTab === "history" && (
+                  <History 
+                    sales={sales} 
+                    products={products} 
+                    onRefreshData={fetchData} 
+                    currentUserRole={tenantContext?.role || "owner"} 
+                  />
+                )}
                 {activeTab === "settings" && (
                   <Settings 
                     onRefreshSectorSettings={fetchData} 
