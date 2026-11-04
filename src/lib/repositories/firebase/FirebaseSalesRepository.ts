@@ -892,7 +892,7 @@ export class FirebaseSalesRepository implements SalesRepository {
       }
 
       // Idempotency: If already cancelled, do not increment stocks again!
-      if (sale.status === "İptal Edildi" || sale.stockRestored === true) {
+      if (sale.status === "İptal Edildi" || sale.stockRestored === true || sale.manualReconciliationRequired === true) {
         console.warn(`[FirebaseSalesRepository] Sale already cancelled in demo: ${saleId}`);
         return sale;
       }
@@ -1115,7 +1115,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         }
 
         // Idempotency: If already cancelled, do not increment stocks again!
-        if (saleData.status === "İptal Edildi" || saleData.stockRestored === true) {
+        if (saleData.status === "İptal Edildi" || saleData.stockRestored === true || saleData.manualReconciliationRequired === true) {
           console.warn(`[FirebaseSalesRepository] Sale already cancelled: ${saleId}`);
           return { id: saleSnap.id, ...saleData } as Sale;
         }
