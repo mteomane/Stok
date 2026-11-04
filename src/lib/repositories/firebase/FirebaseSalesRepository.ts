@@ -929,6 +929,39 @@ export class FirebaseSalesRepository implements SalesRepository {
       const movementsList = getLocal<StockMovement[]>("stokpro_demo_stock_movements", []);
       const reverseMovements: StockMovement[] = [];
 
+      const hasUnallocatedLegacyPackageSale = sale.items.some((item) => {
+        const prod = workingProducts.find(p => p.id === item.productId);
+        if (!prod) return false;
+        if (shouldShowRolls(prod) && prod.rolls && prod.rolls.length > 0) {
+          return !item.selectedRollId && !item.selectedBoxId && !(item.rollAllocations && item.rollAllocations.length > 0);
+        }
+        if (prod.boxes && prod.boxes.length > 0) {
+          return !item.selectedBoxId && !(item.boxAllocations && item.boxAllocations.length > 0);
+        }
+        return false;
+      });
+
+      if (hasUnallocatedLegacyPackageSale) {
+        sale.status = "İptal Edildi";
+        sale.stockRestored = false;
+        sale.manualReconciliationRequired = true;
+        sale.cancelledAt = now;
+        sale.cancelledBy = validUid;
+        sale.cancelReason = reason || "Eski FIFO satışında hangi top/koli kullanıldığı kayıtlı değil. Manuel stok kontrolü gereklidir.";
+        sale.cancelIdempotencyKey = idempotencyKey || undefined;
+        salesList[saleIndex] = sale;
+        setLocal("stokpro_demo_sales", salesList);
+        memoryCache.invalidate("sales_");
+        await logAuditEvent(validUid, {
+          action: "SALE_CANCELLED",
+          entityType: "sale",
+          entityId: saleId,
+          companyId: context.tenantId,
+          details: { totalAmount: sale.totalAmount, manualReconciliationRequired: true }
+        });
+        return sale;
+      }
+
       for (let i = 0; i < sale.items.length; i++) {
         const item = sale.items[i];
         const prod = workingProducts.find(p => p.id === item.productId);
@@ -939,34 +972,48 @@ export class FirebaseSalesRepository implements SalesRepository {
         const rollId = (item as any).selectedRollId || (item as any).rollId;
         const boxId = (item as any).selectedBoxId || (item as any).boxId;
 
-        if (rollId && prod.rolls) {
+        if (item.rollAllocations && item.rollAllocations.length > 0 && prod.rolls) {
+          for (const allocation of item.rollAllocations) {
+            const roll = prod.rolls.find(r => r.id === allocation.rollId);
+            if (!roll) throw new Error(`Satış iptali için kumaş topu bulunamadı: ${allocation.rollId}`);
+            const restoreLength = roundQty(Number(allocation.length));
+            const currentLength = Number(roll.length) || 0;
+            const updatedLength = roundQty(currentLength + restoreLength);
+            roll.length = updatedLength;
+            roll.soldLength = roundQty(Math.max(0, (roll.soldLength || 0) - restoreLength));
+            if (updatedLength > 0 && roll.status === "sold") roll.status = "available";
+          }
+          prod.stock = roundQty(prod.rolls.reduce((sum, roll) => sum + (Number(roll.length) || 0), 0));
+        } else if (item.boxAllocations && item.boxAllocations.length > 0 && prod.boxes) {
+          for (const allocation of item.boxAllocations) {
+            const box = prod.boxes.find(b => b.id === allocation.boxId);
+            if (!box) throw new Error(`Satış iptali için koli bulunamadı: ${allocation.boxId}`);
+            const restoreQuantity = roundQty(Number(allocation.quantity));
+            const currentQuantity = Number(box.quantity) || 0;
+            const updatedQuantity = roundQty(currentQuantity + restoreQuantity);
+            box.quantity = updatedQuantity;
+            box.soldQuantity = roundQty(Math.max(0, (box.soldQuantity || 0) - restoreQuantity));
+            if (updatedQuantity > 0 && box.status === "depleted") box.status = "available";
+          }
+          prod.stock = roundQty(prod.boxes.reduce((sum, box) => sum + (Number(box.quantity) || 0), 0));
+        } else if (rollId && prod.rolls) {
           const roll = prod.rolls.find(r => r.id === rollId);
-          if (roll) {
-            const currentLen = Number(roll.length);
-            const updatedLen = roundQty(currentLen + qtyToRestore);
-            roll.length = updatedLen;
-            roll.soldLength = roundQty(Math.max(0, (roll.soldLength || 0) - qtyToRestore));
-            if (roll.status === "sold" && updatedLen > 0) {
-              roll.status = "available";
-            }
-            prod.stock = roundQty(prod.rolls.reduce((sum, r) => sum + (Number(r.length) || 0), 0));
-          } else {
-            prod.stock = roundQty(previousStock + qtyToRestore);
-          }
+          if (!roll) throw new Error(`Satış iptali için kumaş topu bulunamadı: ${rollId}`);
+          const currentLen = Number(roll.length);
+          const updatedLen = roundQty(currentLen + qtyToRestore);
+          roll.length = updatedLen;
+          roll.soldLength = roundQty(Math.max(0, (roll.soldLength || 0) - qtyToRestore));
+          if (updatedLen > 0 && roll.status === "sold") roll.status = "available";
+          prod.stock = roundQty(prod.rolls.reduce((sum, r) => sum + (Number(r.length) || 0), 0));
         } else if (boxId && prod.boxes) {
-          const box = prod.boxes.find((b: any) => b.id === boxId);
-          if (box) {
-            const currentQty = Number(box.quantity);
-            const updatedQty = roundQty(currentQty + qtyToRestore);
-            box.quantity = updatedQty;
-            box.soldQuantity = roundQty(Math.max(0, (box.soldQuantity || 0) - qtyToRestore));
-            if (box.status === "depleted" && updatedQty > 0) {
-              box.status = "available";
-            }
-            prod.stock = roundQty(prod.boxes.reduce((sum: number, b: any) => sum + (Number(b.quantity) || 0), 0));
-          } else {
-            prod.stock = roundQty(previousStock + qtyToRestore);
-          }
+          const box = prod.boxes.find(b => b.id === boxId);
+          if (!box) throw new Error(`Satış iptali için koli bulunamadı: ${boxId}`);
+          const currentQty = Number(box.quantity);
+          const updatedQty = roundQty(currentQty + qtyToRestore);
+          box.quantity = updatedQty;
+          box.soldQuantity = roundQty(Math.max(0, (box.soldQuantity || 0) - qtyToRestore));
+          if (updatedQty > 0 && box.status === "depleted") box.status = "available";
+          prod.stock = roundQty(prod.boxes.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0));
         } else {
           prod.stock = roundQty(previousStock + qtyToRestore);
         }
@@ -983,7 +1030,7 @@ export class FirebaseSalesRepository implements SalesRepository {
           quantity: qtyToRestore,
           previousStock,
           newStock: prod.stock,
-          unit: prod.unit || (rollId ? "metre" : "adet"),
+          unit: shouldShowRolls(prod) ? "Metre" : (prod.unit || "Adet"),
           referenceType: "sale",
           referenceId: saleId,
           timestamp: now,
@@ -1101,6 +1148,32 @@ export class FirebaseSalesRepository implements SalesRepository {
           }
         }
 
+        const hasUnallocatedLegacyPackageSale = saleData.items.some((item) => {
+          const prod = productDocsMap.get(item.productId);
+          if (!prod) return false;
+          if (shouldShowRolls(prod) && prod.rolls && prod.rolls.length > 0) {
+            return !item.selectedRollId && !item.selectedBoxId && !(item.rollAllocations && item.rollAllocations.length > 0);
+          }
+          if (prod.boxes && prod.boxes.length > 0) {
+            return !item.selectedBoxId && !(item.boxAllocations && item.boxAllocations.length > 0);
+          }
+          return false;
+        });
+
+        if (hasUnallocatedLegacyPackageSale) {
+          const updates = {
+            status: "İptal Edildi" as const,
+            stockRestored: false,
+            manualReconciliationRequired: true,
+            cancelledAt: now,
+            cancelledBy: validUid,
+            cancelReason: reason || "Eski FIFO satışında hangi top/koli kullanıldığı kayıtlı değil. Manuel stok kontrolü gereklidir.",
+            cancelIdempotencyKey: idempotencyKey || null
+          };
+          transaction.update(saleRef, updates);
+          return { id: saleSnap.id, ...saleData, ...updates } as Sale;
+        }
+
         // READ 3: Customer if assigned
         let customerData: any = null;
         let customerRef: any = null;
@@ -1130,34 +1203,48 @@ export class FirebaseSalesRepository implements SalesRepository {
           const rollId = (item as any).selectedRollId || (item as any).rollId;
           const boxId = (item as any).selectedBoxId || (item as any).boxId;
 
-          if (rollId && prod.rolls) {
-            const roll = prod.rolls.find((r: FabricRoll) => r.id === rollId);
-            if (roll) {
-              const currentLen = Number(roll.length);
-              const updatedLen = roundQty(currentLen + qtyToRestore);
-              roll.length = updatedLen;
-              roll.soldLength = roundQty(Math.max(0, (roll.soldLength || 0) - qtyToRestore));
-              if (roll.status === "sold" && updatedLen > 0) {
-                roll.status = "available";
-              }
-              prod.stock = roundQty(prod.rolls.reduce((sum: number, r: FabricRoll) => sum + (Number(r.length) || 0), 0));
-            } else {
-              prod.stock = roundQty(previousStock + qtyToRestore);
+          if (item.rollAllocations && item.rollAllocations.length > 0 && prod.rolls) {
+            for (const allocation of item.rollAllocations) {
+              const roll = prod.rolls.find((r: FabricRoll) => r.id === allocation.rollId);
+              if (!roll) throw new Error(`Satış iptali için kumaş topu bulunamadı: ${allocation.rollId}`);
+              const restoreLength = roundQty(Number(allocation.length));
+              const currentLength = Number(roll.length) || 0;
+              const updatedLength = roundQty(currentLength + restoreLength);
+              roll.length = updatedLength;
+              roll.soldLength = roundQty(Math.max(0, (roll.soldLength || 0) - restoreLength));
+              if (updatedLength > 0 && roll.status === "sold") roll.status = "available";
             }
+            prod.stock = roundQty(prod.rolls.reduce((sum: number, roll: FabricRoll) => sum + (Number(roll.length) || 0), 0));
+          } else if (item.boxAllocations && item.boxAllocations.length > 0 && prod.boxes) {
+            for (const allocation of item.boxAllocations) {
+              const box = prod.boxes.find((b: any) => b.id === allocation.boxId);
+              if (!box) throw new Error(`Satış iptali için koli bulunamadı: ${allocation.boxId}`);
+              const restoreQuantity = roundQty(Number(allocation.quantity));
+              const currentQuantity = Number(box.quantity) || 0;
+              const updatedQuantity = roundQty(currentQuantity + restoreQuantity);
+              box.quantity = updatedQuantity;
+              box.soldQuantity = roundQty(Math.max(0, (box.soldQuantity || 0) - restoreQuantity));
+              if (updatedQuantity > 0 && box.status === "depleted") box.status = "available";
+            }
+            prod.stock = roundQty(prod.boxes.reduce((sum: number, box: any) => sum + (Number(box.quantity) || 0), 0));
+          } else if (rollId && prod.rolls) {
+            const roll = prod.rolls.find((r: FabricRoll) => r.id === rollId);
+            if (!roll) throw new Error(`Satış iptali için kumaş topu bulunamadı: ${rollId}`);
+            const currentLen = Number(roll.length);
+            const updatedLen = roundQty(currentLen + qtyToRestore);
+            roll.length = updatedLen;
+            roll.soldLength = roundQty(Math.max(0, (roll.soldLength || 0) - qtyToRestore));
+            if (updatedLen > 0 && roll.status === "sold") roll.status = "available";
+            prod.stock = roundQty(prod.rolls.reduce((sum: number, r: FabricRoll) => sum + (Number(r.length) || 0), 0));
           } else if (boxId && prod.boxes) {
             const box = prod.boxes.find((b: any) => b.id === boxId);
-            if (box) {
-              const currentQty = Number(box.quantity);
-              const updatedQty = roundQty(currentQty + qtyToRestore);
-              box.quantity = updatedQty;
-              box.soldQuantity = roundQty(Math.max(0, (box.soldQuantity || 0) - qtyToRestore));
-              if (box.status === "depleted" && updatedQty > 0) {
-                box.status = "available";
-              }
-              prod.stock = roundQty(prod.boxes.reduce((sum: number, b: any) => sum + (Number(b.quantity) || 0), 0));
-            } else {
-              prod.stock = roundQty(previousStock + qtyToRestore);
-            }
+            if (!box) throw new Error(`Satış iptali için koli bulunamadı: ${boxId}`);
+            const currentQty = Number(box.quantity);
+            const updatedQty = roundQty(currentQty + qtyToRestore);
+            box.quantity = updatedQty;
+            box.soldQuantity = roundQty(Math.max(0, (box.soldQuantity || 0) - qtyToRestore));
+            if (updatedQty > 0 && box.status === "depleted") box.status = "available";
+            prod.stock = roundQty(prod.boxes.reduce((sum: number, b: any) => sum + (Number(b.quantity) || 0), 0));
           } else {
             prod.stock = roundQty(previousStock + qtyToRestore);
           }
@@ -1173,7 +1260,7 @@ export class FirebaseSalesRepository implements SalesRepository {
             quantity: qtyToRestore,
             previousStock,
             newStock: prod.stock,
-            unit: prod.unit || (rollId ? "metre" : "adet"),
+            unit: shouldShowRolls(prod) ? "Metre" : (prod.unit || "Adet"),
             referenceType: "sale",
             referenceId: saleId,
             timestamp: now,
