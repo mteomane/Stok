@@ -99,6 +99,10 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
   const [editWaybillDate, setEditWaybillDate] = useState("");
   const [editShipDate, setEditShipDate] = useState("");
   const [editAmountPaid, setEditAmountPaid] = useState<number>(0);
+  const [editCustomerName, setEditCustomerName] = useState("");
+  const [editCustomerPhone, setEditCustomerPhone] = useState("");
+  const [editCustomerAddress, setEditCustomerAddress] = useState("");
+  const [editItems, setEditItems] = useState<OrderItem[]>([]);
 
   // Load essential data
   const loadData = async () => {
@@ -304,33 +308,72 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
         return;
       }
 
+      const isPreShipping = selectedOrder.status === "Sipariş Alındı" || selectedOrder.status === "Hazırlanıyor";
+      let recalculatedTotal = selectedOrder.totalAmount;
+
+      if (isPreShipping) {
+        if (!editItems || editItems.length === 0) {
+          alert("Siparişte en az bir ürün bulunmalıdır.");
+          return;
+        }
+        recalculatedTotal = round2(editItems.reduce((acc, it) => {
+          const q = it.cutLength !== undefined ? it.cutLength : it.quantity;
+          return acc + (Number(it.price) || 0) * (Number(q) || 0);
+        }, 0));
+      }
+
       const updates: Partial<Order> = {
         status: editStatus,
         waybillNo: editWaybillNo || null,
         waybillDate: editWaybillDate || null,
         shipDate: editShipDate || null,
-        amountPaid: Number(editAmountPaid)
+        amountPaid: Number(editAmountPaid),
+        ...(isPreShipping ? {
+          items: editItems,
+          totalAmount: recalculatedTotal,
+          customerName: editCustomerName || selectedOrder.customerName,
+          customerDetails: {
+            ...(selectedOrder.customerDetails || {}),
+            name: editCustomerName || selectedOrder.customerName || "",
+            phone: editCustomerPhone,
+            address: editCustomerAddress
+          }
+        } : {})
       };
 
-      const diff = Number(editAmountPaid) - (selectedOrder.amountPaid || 0);
+      const paidDiff = Number(editAmountPaid) - (selectedOrder.amountPaid || 0);
+      const totalDiff = isPreShipping ? round2(recalculatedTotal - selectedOrder.totalAmount) : 0;
 
-      if (selectedOrder.customerId && diff !== 0) {
+      if (selectedOrder.customerId && (paidDiff !== 0 || totalDiff !== 0)) {
         const customer = customers.find(c => c.id === selectedOrder.customerId);
         if (customer) {
           const transactions = [...(customer.transactions || [])];
           let totalDebt = customer.totalDebt || 0;
           let totalPaid = customer.totalPaid || 0;
 
-          totalDebt = Math.max(0, totalDebt - diff);
-          totalPaid += diff;
+          if (totalDiff !== 0) {
+            totalDebt = round2(totalDebt + totalDiff);
+            transactions.unshift({
+              id: "T_ORD_ADJ_" + Math.random().toString(36).substring(2, 6),
+              type: "sale",
+              amount: Math.abs(totalDiff),
+              description: `Sipariş Kalem Düzenlemesi (No: #${selectedOrder.orderNo})`,
+              timestamp: new Date().toISOString()
+            });
+          }
 
-          transactions.unshift({
-            id: "T_ORD_PAY_UPD_" + Math.random().toString(36).substring(2, 6),
-            type: "payment",
-            amount: Math.abs(diff),
-            description: diff > 0 ? `Sipariş Ek Ödemesi (No: #${selectedOrder.orderNo})` : `Sipariş Ödemesi Geri Alımı (No: #${selectedOrder.orderNo})`,
-            timestamp: new Date().toISOString()
-          });
+          if (paidDiff !== 0) {
+            totalDebt = round2(Math.max(0, totalDebt - paidDiff));
+            totalPaid = round2(totalPaid + paidDiff);
+
+            transactions.unshift({
+              id: "T_ORD_PAY_UPD_" + Math.random().toString(36).substring(2, 6),
+              type: "payment",
+              amount: Math.abs(paidDiff),
+              description: paidDiff > 0 ? `Sipariş Ek Ödemesi (No: #${selectedOrder.orderNo})` : `Sipariş Ödemesi Geri Alımı (No: #${selectedOrder.orderNo})`,
+              timestamp: new Date().toISOString()
+            });
+          }
 
           await updateCustomer(selectedOrder.customerId, {
             totalDebt,
@@ -624,10 +667,14 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
                               setEditWaybillDate(order.waybillDate || "");
                               setEditShipDate(order.shipDate || "");
                               setEditAmountPaid(order.amountPaid || 0);
+                              setEditCustomerName(order.customerDetails?.name || order.customerName || "");
+                              setEditCustomerPhone(order.customerDetails?.phone || "");
+                              setEditCustomerAddress(order.customerDetails?.address || "");
+                              setEditItems(JSON.parse(JSON.stringify(order.items || [])));
                               setIsEditModalOpen(true);
                             }}
                             className="p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-800 rounded transition-colors cursor-pointer"
-                            title="Durum / İrsaliye Düzenle"
+                            title="Sipariş / Kalem / İrsaliye Düzenle"
                           >
                             <Edit3 className="w-4 h-4" />
                           </button>
@@ -1028,27 +1075,35 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
       )}
 
       {/* ========================================= */}
-      {/* 6. EDIT ORDER STATUS MODAL */}
+      {/* 6. EDIT ORDER STATUS & ITEMS MODAL */}
       {/* ========================================= */}
       {isEditModalOpen && selectedOrder && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-6">
             <div className="bg-slate-50 px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-              <span className="font-extrabold text-xs text-slate-700 uppercase tracking-wide">
-                Durum & İrsaliye Güncelle: #{selectedOrder.orderNo}
-              </span>
+              <div>
+                <span className="font-extrabold text-xs text-slate-700 uppercase tracking-wide block">
+                  Sipariş & İrsaliye Düzenle: #{selectedOrder.orderNo}
+                </span>
+                <span className="text-[11px] text-slate-400">
+                  Mevcut Durum: <strong>{selectedOrder.status}</strong>
+                </span>
+              </div>
               <button onClick={() => setIsEditModalOpen(false)} className="text-slate-400 hover:text-slate-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleEditOrderSubmit} className="p-5 space-y-4">
-              <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Sipariş Durumu</label>
+            <form onSubmit={handleEditOrderSubmit} className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
+              {/* Status Selector */}
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                  Sipariş Durumu
+                </label>
                 <select
                   value={editStatus}
                   onChange={(e) => setEditStatus(e.target.value as any)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 focus:outline-none focus:bg-white font-semibold"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none font-semibold text-slate-800"
                 >
                   <option value="Sipariş Alındı">Sipariş Alındı</option>
                   <option value="Hazırlanıyor">Hazırlanıyor / Paket kesiliyor</option>
@@ -1058,61 +1113,258 @@ export function OrdersWaybills({ products, onRefreshProducts }: OrdersWaybillsPr
                 </select>
               </div>
 
-              <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">İrsaliye Numarası (Varsa)</label>
-                <input
-                  type="text"
-                  placeholder="Örn: IRS-2026-0041"
-                  value={editWaybillNo}
-                  onChange={(e) => setEditWaybillNo(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none font-mono"
-                />
-              </div>
+              {/* Status Lock Warning if Already Shipped/Delivered */}
+              {(selectedOrder.status === "Sevk Edildi" || selectedOrder.status === "Teslim Edildi") ? (
+                <div className="bg-amber-50 text-amber-800 text-xs p-3 rounded-xl border border-amber-200 flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                  <span>
+                    Resmi İrsaliye Koruması: Bu sipariş sevk edilmiş veya teslim edilmiştir. Muhasebe ve irsaliye tutarlılığı için ürün kalemleri değiştirilemez. Yalnızca irsaliye no, sevk tarihleri ve tahsilat güncellenebilir.
+                  </span>
+                </div>
+              ) : (
+                /* Editable Customer and Line Items Section */
+                <div className="space-y-4">
+                  {/* Customer Details */}
+                  <div className="bg-indigo-50/30 p-3.5 rounded-xl border border-indigo-100 space-y-2">
+                    <span className="text-[11px] font-bold text-indigo-700 uppercase tracking-wider block">
+                      Müşteri & Teslimat Bilgisi
+                    </span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Alıcı Adı / Unvan</label>
+                        <input
+                          type="text"
+                          value={editCustomerName}
+                          onChange={(e) => setEditCustomerName(e.target.value)}
+                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded bg-white text-xs"
+                          placeholder="Müşteri Adı"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Telefon</label>
+                        <input
+                          type="text"
+                          value={editCustomerPhone}
+                          onChange={(e) => setEditCustomerPhone(e.target.value)}
+                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded bg-white text-xs"
+                          placeholder="Telefon"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Teslimat / Sevk Adresi</label>
+                        <input
+                          type="text"
+                          value={editCustomerAddress}
+                          onChange={(e) => setEditCustomerAddress(e.target.value)}
+                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded bg-white text-xs"
+                          placeholder="Adres"
+                        />
+                      </div>
+                    </div>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-2">
+                  {/* Order Line Items */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                        Sipariş Kalemleri ({editItems.length})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const firstProd = products[0];
+                          if (firstProd) {
+                            setEditItems([
+                              ...editItems,
+                              {
+                                productId: firstProd.id,
+                                productName: firstProd.name,
+                                quantity: 1,
+                                price: firstProd.price
+                              }
+                            ]);
+                          }
+                        }}
+                        className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 cursor-pointer"
+                      >
+                        <PlusCircle className="w-3.5 h-3.5" /> Kalem Ekle
+                      </button>
+                    </div>
+
+                    <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                      {editItems.map((item, idx) => (
+                        <div key={idx} className="p-2.5 bg-slate-50 rounded-lg border border-slate-200 flex items-center gap-2 text-xs">
+                          <div className="flex-1 min-w-0">
+                            <select
+                              value={item.productId}
+                              onChange={(e) => {
+                                const matched = products.find(p => p.id === e.target.value);
+                                if (matched) {
+                                  const updated = [...editItems];
+                                  updated[idx] = {
+                                    ...updated[idx],
+                                    productId: matched.id,
+                                    productName: matched.name,
+                                    price: matched.price
+                                  };
+                                  setEditItems(updated);
+                                }
+                              }}
+                              className="w-full p-1 border border-slate-200 rounded bg-white text-xs font-medium"
+                            >
+                              {products.map(p => (
+                                <option key={p.id} value={p.id}>{p.name}</option>
+                              ))}
+                            </select>
+                            {item.selectedRollId && (
+                              <span className="text-[9px] text-indigo-600 font-mono block mt-0.5">
+                                Top ID: {item.selectedRollId} {item.cutLength ? `(${item.cutLength}m kesim)` : ""}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="w-20">
+                            <label className="text-[9px] text-slate-400 block">
+                              {item.cutLength !== undefined ? "Metre" : "Adet"}
+                            </label>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0.1"
+                              value={item.cutLength !== undefined ? item.cutLength : item.quantity}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value) || 1;
+                                const updated = [...editItems];
+                                if (item.cutLength !== undefined) {
+                                  updated[idx].cutLength = val;
+                                  updated[idx].quantity = val;
+                                } else {
+                                  updated[idx].quantity = val;
+                                }
+                                setEditItems(updated);
+                              }}
+                              className="w-full p-1 border border-slate-200 rounded bg-white text-xs text-center font-bold"
+                            />
+                          </div>
+
+                          <div className="w-20">
+                            <label className="text-[9px] text-slate-400 block">Birim (TL)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={item.price}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value) || 0;
+                                const updated = [...editItems];
+                                updated[idx].price = val;
+                                setEditItems(updated);
+                              }}
+                              className="w-full p-1 border border-slate-200 rounded bg-white text-xs text-right font-bold"
+                            />
+                          </div>
+
+                          <div className="w-20 text-right">
+                            <label className="text-[9px] text-slate-400 block">Tutar</label>
+                            <span className="font-bold text-slate-800">
+                              {round2(item.price * (item.cutLength !== undefined ? item.cutLength : item.quantity))} ₺
+                            </span>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (editItems.length <= 1) {
+                                alert("Siparişte en az bir ürün bulunmalıdır.");
+                                return;
+                              }
+                              setEditItems(editItems.filter((_, i) => i !== idx));
+                            }}
+                            className="p-1 text-slate-300 hover:text-rose-500 rounded"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="bg-slate-100 p-2.5 rounded-lg flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-600">Yeniden Hesaplanan Toplam:</span>
+                      <span className="font-black text-indigo-700 text-sm">
+                        {round2(editItems.reduce((acc, it) => acc + (it.price * (it.cutLength !== undefined ? it.cutLength : it.quantity)), 0))} TL
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Waybill Metadata */}
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3">
                 <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">İrsaliye Tarihi</label>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                    İrsaliye Numarası
+                  </label>
                   <input
-                    type="date"
-                    value={editWaybillDate}
-                    onChange={(e) => setEditWaybillDate(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none"
+                    type="text"
+                    placeholder="Örn: IRS-2026-0041"
+                    value={editWaybillNo}
+                    onChange={(e) => setEditWaybillNo(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none font-mono"
                   />
                 </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Fiili Sevk Tarihi</label>
-                  <input
-                    type="date"
-                    value={editShipDate}
-                    onChange={(e) => setEditShipDate(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none"
-                  />
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                      İrsaliye Tarihi
+                    </label>
+                    <input
+                      type="date"
+                      value={editWaybillDate}
+                      onChange={(e) => setEditWaybillDate(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                      Fiili Sevk Tarihi
+                    </label>
+                    <input
+                      type="date"
+                      value={editShipDate}
+                      onChange={(e) => setEditShipDate(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none"
+                    />
+                  </div>
                 </div>
               </div>
 
+              {/* Amount Paid */}
               <div>
-                <label className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider block mb-1 font-bold">Toplam Alınan Ödeme (TL)</label>
+                <label className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider block mb-1 font-bold">
+                  Toplam Alınan Ödeme (TL)
+                </label>
                 <input
                   type="number"
                   min={0}
+                  step="0.01"
                   value={editAmountPaid}
                   onChange={(e) => setEditAmountPaid(Number(e.target.value))}
-                  className="w-full px-3 py-2 border border-emerald-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 font-bold"
+                  className="w-full px-3 py-2 border border-emerald-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 font-bold font-mono text-emerald-600"
                 />
-                <span className="text-[9px] text-slate-400 block mt-0.5">Sipariş toplam tutarı: {selectedOrder.totalAmount} TL</span>
               </div>
 
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setIsEditModalOpen(false)}
-                  className="px-4 py-2 border border-slate-200 text-slate-500 rounded-lg text-xs font-semibold hover:bg-slate-50"
+                  className="px-4 py-2 border border-slate-200 text-slate-500 rounded-lg text-xs font-semibold hover:bg-slate-50 cursor-pointer"
                 >
                   Kapat
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-sm"
+                  className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-sm cursor-pointer"
                 >
                   Güncelleştirmeleri Kaydet
                 </button>

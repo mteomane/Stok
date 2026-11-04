@@ -64,6 +64,7 @@ export interface ProcessSaleItemInput {
   quantity: number;
   selectedRollId?: string;
   cutLength?: number;
+  selectedBoxId?: string;
 }
 
 export interface ProcessSaleParams {

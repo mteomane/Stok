@@ -12,6 +12,7 @@ interface ReceiptPrintModalProps {
 
 export function ReceiptPrintModal({ sale, products, onClose }: ReceiptPrintModalProps) {
   const [companyInfo, setCompanyInfo] = useState<CompanyInfo | null>(null);
+  const [paperWidth, setPaperWidth] = useState<"58mm" | "80mm">("80mm");
 
   useEffect(() => {
     const fetchCompany = async () => {
@@ -47,6 +48,9 @@ export function ReceiptPrintModal({ sale, products, onClose }: ReceiptPrintModal
     window.print();
   };
 
+  const maxWidthCss = paperWidth === "58mm" ? "58mm" : "80mm";
+  const previewWidthClass = paperWidth === "58mm" ? "max-w-[240px] text-[11px]" : "max-w-[340px] text-xs";
+
   return (
     <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-2 sm:p-4 animate-fade-in">
       {/* Print Specific CSS Styles */}
@@ -63,9 +67,9 @@ export function ReceiptPrintModal({ sale, products, onClose }: ReceiptPrintModal
             left: 0 !important;
             top: 0 !important;
             width: 100% !important;
-            max-width: 80mm !important; /* Standard Thermal Receipt Width */
+            max-width: ${maxWidthCss} !important;
             margin: 0 auto !important;
-            padding: 10px !important;
+            padding: 6px !important;
             background: white !important;
             color: black !important;
             box-shadow: none !important;
@@ -91,22 +95,58 @@ export function ReceiptPrintModal({ sale, products, onClose }: ReceiptPrintModal
               <p className="text-xs text-slate-400">Fiş No: #{sale.id.slice(0, 8).toUpperCase()}</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          <div className="flex items-center gap-2">
+            {/* 58mm / 80mm Toggle */}
+            <div className="flex bg-slate-200 p-0.5 rounded-lg text-[11px] font-bold">
+              <button
+                type="button"
+                onClick={() => setPaperWidth("58mm")}
+                className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
+                  paperWidth === "58mm" ? "bg-white text-emerald-700 shadow-sm" : "text-slate-600 hover:text-slate-900"
+                }`}
+                title="58mm Dar Termal Rulo"
+              >
+                58 mm
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaperWidth("80mm")}
+                className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
+                  paperWidth === "80mm" ? "bg-white text-emerald-700 shadow-sm" : "text-slate-600 hover:text-slate-900"
+                }`}
+                title="80mm Standart Termal Rulo"
+              >
+                80 mm
+              </button>
+            </div>
+
+            <button
+              onClick={onClose}
+              className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Receipt Canvas (Scrollable Preview Area) */}
         <div className="p-6 bg-slate-100 overflow-y-auto flex flex-col items-center flex-1">
           <div
             id="printable-receipt-root"
-            className="bg-white p-6 rounded-xl shadow-lg border border-slate-200 w-full max-w-[340px] text-slate-800 font-sans text-xs space-y-4"
+            className={`bg-white p-5 rounded-xl shadow-lg border border-slate-200 w-full ${previewWidthClass} text-slate-800 font-sans space-y-3`}
           >
-            {/* Store / Company Branding */}
+            {/* Store / Company Branding with Logo */}
             <div className="text-center space-y-1 pb-3 border-b border-dashed border-slate-300">
+              {companyInfo?.logo && (
+                <div className="flex justify-center mb-1">
+                  <img
+                    src={companyInfo.logo}
+                    alt="Logo"
+                    className="max-h-12 max-w-[140px] object-contain"
+                  />
+                </div>
+              )}
               <h2 className="font-black text-sm uppercase text-slate-900 tracking-wider">
                 {companyInfo?.name || "STOKPRO MAĞAZA VE SATIŞ"}
               </h2>
@@ -166,20 +206,25 @@ export function ReceiptPrintModal({ sale, products, onClose }: ReceiptPrintModal
                   `Ürün (#${item.productId})`;
 
                 const rollInfo = (item as any).selectedRollNumber
-                  ? ` Top: ${(item as any).selectedRollNumber}`
+                  ? ` (Top: ${(item as any).selectedRollNumber})`
                   : "";
+                const boxInfo = (item as any).selectedBoxNumber
+                  ? ` (Koli: ${(item as any).selectedBoxNumber})`
+                  : "";
+
+                const unitLabel = item.unit || ((item as any).cutLength ? "metre" : "adet");
 
                 return (
                   <div key={idx} className="space-y-0.5">
                     <div className="flex justify-between font-bold text-slate-800">
                       <span className="truncate max-w-[190px]">
-                        {pName} {rollInfo}
+                        {pName}{rollInfo}{boxInfo}
                       </span>
                       <span className="font-mono">{formatCurrency(item.price * item.quantity)}</span>
                     </div>
                     <div className="flex justify-between text-[10px] text-slate-400 font-mono pl-2">
                       <span>
-                        {item.quantity} x {formatCurrency(item.price)}
+                        {item.quantity} {unitLabel} x {formatCurrency(item.price)}
                       </span>
                     </div>
                   </div>

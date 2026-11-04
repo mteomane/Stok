@@ -32,7 +32,9 @@ import {
   Download,
   Barcode as BarcodeIcon,
   Camera,
-  TrendingUp
+  TrendingUp,
+  ChevronDown,
+  ChevronUp
 } from "lucide-react";
 import { QRImage } from "./QRImage";
 import { BulkQRPrintModal } from "./BulkQRPrintModal";
@@ -77,6 +79,7 @@ export function Inventory({
   const [onlyLowStock, setOnlyLowStock] = useState<boolean>(false);
   const [showArchived, setShowArchived] = useState<boolean>(false);
   const [highlightProductId, setHighlightProductId] = useState<string | null>(null);
+  const [expandedProductId, setExpandedProductId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(24);
   const [isExporting, setIsExporting] = useState(false);
@@ -182,6 +185,7 @@ export function Inventory({
       }
       if (initialFilter.highlightProductId) {
         setHighlightProductId(initialFilter.highlightProductId);
+        setExpandedProductId(initialFilter.highlightProductId);
         const timerScroll = setTimeout(() => {
           const el = document.getElementById(`product-card-${initialFilter.highlightProductId}`);
           if (el) {
@@ -242,11 +246,40 @@ export function Inventory({
   const [selectedRollProduct, setSelectedRollProduct] = useState<Product | null>(null);
   const [newRollNumber, setNewRollNumber] = useState("");
   const [newRollLength, setNewRollLength] = useState("");
+  const [newRollColorCode, setNewRollColorCode] = useState("");
+  const [newRollColorName, setNewRollColorName] = useState("");
+  const [newRollSupplier, setNewRollSupplier] = useState("");
   const [editingRollId, setEditingRollId] = useState<string | null>(null);
   const [editingRollNumber, setEditingRollNumber] = useState("");
   const [editingRollLength, setEditingRollLength] = useState("");
   const [editingRollStatus, setEditingRollStatus] = useState<"available" | "sold" | "reserved">("available");
   const [rollQrValue, setRollQrValue] = useState<string | null>(null);
+
+  // Migration helper for legacy fabric stock with no rolls
+  const handleInitializeRolls = async (p: Product) => {
+    if (p.rolls && p.rolls.length > 0) return;
+    const initialRoll: FabricRoll = {
+      id: "R-" + Math.random().toString(36).substring(2, 8).toUpperCase(),
+      productId: p.id,
+      rollNumber: "Top #1",
+      length: p.stock,
+      initialLength: p.stock,
+      soldLength: 0,
+      colorCode: (p.attributes?.RenkKodu || p.metadata?.colorCode) as string | undefined,
+      colorName: (p.attributes?.Renk || p.metadata?.colorName) as string | undefined,
+      entryDate: new Date().toISOString().split("T")[0],
+      status: "available"
+    };
+    try {
+      await onUpdateProduct(p.id, {
+        rolls: [initialRoll],
+        stock: p.stock
+      });
+      if (onRefreshData) await onRefreshData();
+    } catch (err: any) {
+      alert("Rulo başlatılamadı: " + (err.message || "Hata"));
+    }
+  };
 
   const handleAddRoll = async () => {
     if (!selectedRollProduct) return;
@@ -261,11 +294,17 @@ export function Inventory({
     
     const newRoll: FabricRoll = {
       id: "R-" + Math.random().toString(36).substring(2, 8).toUpperCase(),
+      productId: selectedRollProduct.id,
       rollNumber: rollNum,
       length: len,
       initialLength: len,
       soldLength: 0,
-      status: "available"
+      colorCode: newRollColorCode.trim() || undefined,
+      colorName: newRollColorName.trim() || undefined,
+      supplier: newRollSupplier.trim() || undefined,
+      entryDate: new Date().toISOString().split("T")[0],
+      status: "available",
+      createdAt: new Date().toISOString()
     };
 
     const updatedRolls = [...currentRolls, newRoll];
@@ -284,6 +323,9 @@ export function Inventory({
       setSelectedRollProduct(updatedProduct);
       setNewRollNumber("");
       setNewRollLength("");
+      setNewRollColorCode("");
+      setNewRollColorName("");
+      setNewRollSupplier("");
       if (onRefreshData) await onRefreshData();
     } catch (err) {
       alert("Top eklenirken bir hata oluştu.");
@@ -793,310 +835,514 @@ export function Inventory({
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden divide-y divide-slate-100">
+          {/* Desktop Table Header */}
+          <div className="hidden md:grid grid-cols-12 gap-3 px-4 py-2.5 bg-slate-50 text-[11px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
+            <div className="col-span-5">Ürün & SKU / Barkod</div>
+            <div className="col-span-2">Kategori</div>
+            <div className="col-span-2 text-right">Mevcut Stok</div>
+            <div className="col-span-2 text-right">Satış Fiyatı</div>
+            <div className="col-span-1 text-center">Detay</div>
+          </div>
+
+          {/* Product Rows */}
           {paginatedProducts.map((p) => {
             const isLowStock = p.stock <= p.minStock;
             const isHighlighted = p.id === highlightProductId;
+            const isExpanded = p.id === expandedProductId;
+
             return (
               <div
                 id={`product-card-${p.id}`}
                 key={p.id}
-                className={`bg-white rounded-xl border p-5 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group ${
+                className={`transition-colors ${
                   isHighlighted 
-                    ? "ring-4 ring-indigo-500/80 border-indigo-400 shadow-xl bg-indigo-50/20" 
+                    ? "bg-indigo-50/50 ring-2 ring-indigo-500/80" 
                     : isLowStock 
-                      ? "border-rose-200 bg-rose-50/20" 
-                      : "border-slate-200"
+                      ? "bg-rose-50/20" 
+                      : "hover:bg-slate-50/60"
                 }`}
               >
-                <div>
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-[9px] font-black uppercase text-indigo-600 tracking-wider bg-indigo-50 px-2 py-0.5 rounded">
-                          {p.category}
-                        </span>
-                        {p.isPackaged && (
-                          <span className="text-[9px] font-black uppercase text-emerald-600 tracking-wider bg-emerald-50 px-2 py-0.5 rounded flex items-center gap-0.5">
-                            <Package className="w-2.5 h-2.5" />
-                            Kısmi Birim
-                          </span>
-                        )}
-                      </div>
-
-                      <h3 className="font-bold text-slate-800 text-base mt-2 leading-snug truncate group-hover:text-indigo-600 transition-colors">
+                {/* 1. Desktop Compact Row */}
+                <div
+                  onClick={() => setExpandedProductId(isExpanded ? null : p.id)}
+                  className="hidden md:grid grid-cols-12 gap-3 items-center px-4 py-3 cursor-pointer select-none"
+                >
+                  {/* Name & SKU / Badges */}
+                  <div className="col-span-5 min-w-0 pr-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-800 text-sm truncate hover:text-indigo-600 transition-colors">
                         {p.name}
-                      </h3>
-                      <span className="text-xs text-slate-400 font-mono mt-0.5 block">SKU: {p.sku}</span>
+                      </span>
+                      {isLowStock && (
+                        <span className="text-[9px] font-black uppercase text-rose-700 bg-rose-100 px-1.5 py-0.2 rounded flex items-center gap-0.5 flex-shrink-0">
+                          <AlertCircle className="w-2.5 h-2.5" />
+                          Kritik
+                        </span>
+                      )}
+                      {p.isPackaged && (
+                        <span className="text-[9px] font-black uppercase text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded flex items-center gap-0.5 flex-shrink-0">
+                          <Package className="w-2.5 h-2.5" />
+                          Paket
+                        </span>
+                      )}
+                      {p.isActive === false && (
+                        <span className="text-[9px] font-black uppercase text-slate-500 bg-slate-200 px-1.5 py-0.2 rounded flex-shrink-0">
+                          Arşivde
+                        </span>
+                      )}
                     </div>
-
-                    <button
-                      onClick={() => setActiveQrProduct(p)}
-                      title="QR Kod Göster"
-                      className="p-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 hover:border-indigo-200 transition-all flex-shrink-0"
-                    >
-                      <QrCode className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400 font-mono truncate">
+                      <span>SKU: {p.sku || "—"}</span>
+                      {p.barcode && <span>| Barkod: {p.barcode}</span>}
+                      {p.brand && <span className="font-sans text-slate-500">| {p.brand}</span>}
+                    </div>
                   </div>
 
-                  {/* Dynamic Sector Attributes & Smart Badges */}
-                  {((p.metadata && Object.keys(p.metadata).length > 0) || (p.attributes && Object.keys(p.attributes).length > 0)) && (
-                    <div className="flex flex-wrap gap-1.5 mt-3">
-                      {/* Food SKT / Expiry Smart Badge */}
-                      {(() => {
-                        const expiry = p.metadata?.expiryDate || p.attributes?.SKT || p.attributes?.expiryDate;
-                        if (!expiry) return null;
-                        const expDate = new Date(expiry);
-                        const isExpired = !isNaN(expDate.getTime()) && expDate.getTime() < new Date().setHours(0, 0, 0, 0);
-                        const diffDays = Math.ceil((expDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-                        const isExpiringSoon = !isExpired && diffDays <= 30;
-
-                        return (
-                          <span
-                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md flex items-center gap-1 border ${
-                              isExpired
-                                ? "bg-rose-100 text-rose-800 border-rose-300 animate-pulse"
-                                : isExpiringSoon
-                                ? "bg-amber-100 text-amber-800 border-amber-300"
-                                : "bg-emerald-50 text-emerald-700 border-emerald-200"
-                            }`}
-                            title={`Son Tüketim Tarihi: ${expiry}`}
-                          >
-                            <Calendar className="w-2.5 h-2.5" />
-                            SKT: {expiry} {isExpired ? "(Geçmiş!)" : isExpiringSoon ? `(${diffDays} gün)` : ""}
-                          </span>
-                        );
-                      })()}
-
-                      {/* Food Batch/Lot Smart Badge */}
-                      {(() => {
-                        const batch = p.metadata?.batchNumber || p.attributes?.batchNumber;
-                        if (!batch) return null;
-                        return (
-                          <span className="text-[9px] bg-slate-100 border border-slate-200 text-slate-700 font-mono font-bold px-1.5 py-0.5 rounded-md">
-                            Lot: {batch}
-                          </span>
-                        );
-                      })()}
-
-                      {/* Spare Parts OEM / Part Number Smart Badge */}
-                      {(() => {
-                        const partNo = p.metadata?.partNumber || p.attributes?.partNumber || p.attributes?.SeriNo;
-                        if (!partNo) return null;
-                        return (
-                          <span className="text-[9px] bg-blue-50 border border-blue-200 text-blue-800 font-mono font-bold px-1.5 py-0.5 rounded-md flex items-center gap-1">
-                            <Wrench className="w-2.5 h-2.5 text-blue-600" />
-                            Parça No: {partNo}
-                          </span>
-                        );
-                      })()}
-
-                      {/* Spare Parts Vehicle Compatibility Smart Badge */}
-                      {(() => {
-                        const compat = p.metadata?.vehicleCompatibility || p.attributes?.vehicleCompatibility || p.attributes?.UyumluModel;
-                        if (!compat) return null;
-                        return (
-                          <span className="text-[9px] bg-indigo-50 border border-indigo-200 text-indigo-800 font-medium px-1.5 py-0.5 rounded-md">
-                            Uyum: {compat}
-                          </span>
-                        );
-                      })()}
-
-                      {/* Other dynamic attributes */}
-                      {Object.entries({ ...(p.attributes || {}), ...(p.metadata || {}) }).map(([key, val]) => {
-                        if (!val || ["expiryDate", "SKT", "batchNumber", "partNumber", "SeriNo", "vehicleCompatibility", "UyumluModel"].includes(key)) {
-                          return null;
-                        }
-                        return (
-                          <span key={key} className="text-[9px] bg-slate-100 border border-slate-200/55 text-slate-600 font-bold px-1.5 py-0.5 rounded-md">
-                            {key}: <span className="font-semibold text-slate-800">{String(val)}</span>
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  <div className="flex items-baseline gap-2 mt-4">
-                    <span className="text-xl font-bold text-slate-900">{formatCurrency(p.price)}</span>
-                    <span className="text-xs text-slate-400">
-                      / {p.unit ? p.unit.toLowerCase() : (p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas") ? "metre" : p.packageUnitName ? p.packageUnitName.toLowerCase() : "adet")}
+                  {/* Category */}
+                  <div className="col-span-2">
+                    <span className="text-xs font-semibold text-slate-700 bg-slate-100 border border-slate-200/60 px-2 py-0.5 rounded-md inline-block max-w-[140px] truncate">
+                      {p.category}
                     </span>
                   </div>
-                </div>
 
-                {/* Packaged sub-unit stock section */}
-                {p.isPackaged && (
-                  <div className="mt-4 bg-emerald-50/40 p-3 rounded-lg border border-emerald-100 text-xs space-y-2">
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide block">Koli/Paket İçi Stok</span>
-                        <span className="font-bold text-emerald-700">
-                          {p.subUnitStock} / {p.packageUnitsCount} {p.packageUnitName || 'Birim'}
+                  {/* Stock & Quick Adjust Buttons */}
+                  <div className="col-span-2 flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                    <div className="text-right">
+                      <div className={`text-sm font-black ${isLowStock ? "text-rose-600" : "text-emerald-700"}`}>
+                        {p.stock}{" "}
+                        <span className="text-xs font-normal text-slate-500">
+                          {p.unit || (p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas") ? "m" : p.packageUnitName || "ad")}
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleExtractSubunit(p.id, 1)}
-                        className="p-1 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] rounded flex items-center gap-1 active:scale-95 transition-all shadow-sm cursor-pointer"
-                        title={`${p.packageUnitName || 'Birim'} Çıkar`}
-                      >
-                        <Scissors className="w-3 h-3" />
-                        1 {p.packageUnitName || 'Birim'} Al
-                      </button>
-                    </div>
-                    <span className="text-[9px] text-slate-400 block leading-tight">
-                      İçinden alınan her parça stoğu düşürür. Sıfırlanırsa ana stoktan otomatik 1 paket açılır.
-                    </span>
-                  </div>
-                )}
-
-                {/* Fabric Rolls Tracking Section (Textile / Rolls enabled only) */}
-                {shouldShowRolls(p, sectorSettings?.activeSector) && (
-                  <div className="mt-4 bg-indigo-50/40 p-3 rounded-xl border border-indigo-100 text-xs space-y-2">
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide block">Rulo / Top Takibi</span>
-                        <span className="font-bold text-indigo-700">
-                          {p.rolls?.length || 0} Adet Top ({p.stock} m)
+                      {isLowStock && (
+                        <span className="text-[10px] text-rose-500 font-bold block leading-none mt-0.5">
+                          Min: {p.minStock}
                         </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedRollProduct(p)}
-                        className="p-1 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] rounded flex items-center gap-1 active:scale-95 transition-all shadow-sm cursor-pointer"
-                        title="Top Detaylarını Düzenle"
-                      >
-                        <Layers className="w-3 h-3" />
-                        Topları Yönet
-                      </button>
+                      )}
                     </div>
-                    {/* Tiny roll badge visualization */}
-                    {p.rolls && p.rolls.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1 max-h-[44px] overflow-y-auto">
-                        {p.rolls.slice(0, 5).map((r) => (
-                          <span
-                            key={r.id}
-                            className={`text-[9px] px-1.5 py-0.5 rounded font-bold font-mono ${
-                              r.status === "sold"
-                                ? "bg-slate-200 text-slate-500 line-through"
-                                : r.status === "reserved"
-                                ? "bg-amber-100 text-amber-700"
-                                : "bg-emerald-100 text-emerald-800"
-                            }`}
-                          >
-                            {r.rollNumber} ({r.length}m)
-                          </span>
-                        ))}
-                        {p.rolls.length > 5 && (
-                          <span className="text-[9px] text-slate-400 font-bold font-mono px-1">
-                            +{p.rolls.length - 5} top daha...
-                          </span>
-                        )}
+                    {p.isActive !== false && (
+                      <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg p-0.5 ml-1">
+                        <button
+                          type="button"
+                          onClick={() => adjustStock(p.id, p.stock, -1)}
+                          className="p-1 rounded hover:bg-white text-slate-500 hover:text-rose-500 active:scale-90 transition-all cursor-pointer"
+                          title="1 Azalt"
+                        >
+                          <Minus className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => adjustStock(p.id, p.stock, 1)}
+                          className="p-1 rounded hover:bg-white text-slate-500 hover:text-emerald-600 active:scale-90 transition-all cursor-pointer"
+                          title="1 Artır"
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
                       </div>
                     )}
                   </div>
-                )}
 
-                <div className="mt-5 pt-4 border-t border-slate-150 flex items-center justify-between">
-                  {/* Stock counter with alerts */}
-                  <div className="flex flex-col">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Ana Stok</span>
-                    <span
-                      className={`text-lg font-bold mt-0.5 ${isLowStock ? "text-rose-600" : "text-emerald-600"}`}
-                    >
-                      {p.stock}{" "}
-                      {p.unit || (p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas")
-                        ? "Metre"
-                        : p.packageUnitName || "Adet")}
-                      {(p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas")) &&
-                        p.rolls && p.rolls.length > 0 && (
-                          <span className="text-xs font-semibold text-slate-500 ml-1">
-                            ({p.rolls.length} Top)
-                          </span>
-                        )}
-                    </span>
-                    {isLowStock && (
-                      <span className="text-[10px] text-rose-500 font-semibold flex items-center gap-0.5 mt-0.5">
-                        <AlertCircle className="w-3 h-3" />
-                        <span>Kritik (Min: {p.minStock})</span>
+                  {/* Price */}
+                  <div className="col-span-2 text-right">
+                    <span className="text-sm font-black text-slate-900 block">{formatCurrency(p.price)}</span>
+                    {p.costPrice ? (
+                      <span className="text-[10px] text-slate-400 font-medium block">
+                        Maliyet: {formatCurrency(p.costPrice)}
                       </span>
-                    )}
+                    ) : null}
                   </div>
 
-                  {/* Stock quick adjustments and edit actions */}
-                  <div className="flex items-center gap-1 sm:gap-2">
-                    <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg p-1">
-                      <button
-                        onClick={() => adjustStock(p.id, p.stock, -1)}
-                        className="p-1 rounded-md hover:bg-white text-slate-500 hover:text-rose-500 active:scale-90 transition-all"
-                      >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-                      <span className="px-2 text-xs sm:text-sm font-bold text-slate-700 min-w-[20px] text-center">
-                        {p.stock}
-                      </span>
-                      <button
-                        onClick={() => adjustStock(p.id, p.stock, 1)}
-                        className="p-1 rounded-md hover:bg-white text-slate-500 hover:text-emerald-500 active:scale-90 transition-all"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-
-                    {/* Dedicated Quick Replenish Button */}
+                  {/* Expand / Quick Action Icon */}
+                  <div className="col-span-1 flex items-center justify-center gap-1">
                     {p.isActive !== false && (
                       <button
                         type="button"
-                        onClick={() => setReplenishProduct(p)}
-                        title="Hızlı Stok Girişi Yap"
-                        className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-xs rounded-lg border border-emerald-200 flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReplenishProduct(p);
+                        }}
+                        className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
+                        title="Stok Girişi Yap"
                       >
-                        <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
-                        <span className="hidden sm:inline">Stok Ekle</span>
+                        <TrendingUp className="w-4 h-4" />
                       </button>
                     )}
-
-                    {p.isActive === false ? (
-                      onRestoreProduct && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (confirm(`"${p.name}" ürününü arşivden geri yüklemek istiyor musunuz?`)) {
-                              onRestoreProduct(p.id);
-                            }
-                          }}
-                          title="Arşivden Geri Yükle"
-                          className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-lg text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer shadow-sm"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Geri Yükle</span>
-                        </button>
-                      )
-                    ) : (
-                      <>
-                        <button
-                          onClick={() => setEditingProduct(p)}
-                          title="Düzenle"
-                          className="p-1.5 text-slate-400 hover:text-indigo-600 active:scale-90 transition-all cursor-pointer"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            if (confirm(`"${p.name}" ürününü arşive kaldırmak istediğinize emin misiniz? (Ürün geçmiş satışlarda korunmaya devam edecektir)`)) {
-                              onDeleteProduct(p.id);
-                            }
-                          }}
-                          title="Arşive Kaldır (Soft Delete)"
-                          className="p-1.5 text-slate-400 hover:text-rose-500 active:scale-90 transition-all cursor-pointer"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => setExpandedProductId(isExpanded ? null : p.id)}
+                      className="p-1.5 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
+                      title={isExpanded ? "Detayları Kapat" : "Detayları Göster"}
+                    >
+                      {isExpanded ? (
+                        <ChevronUp className="w-4 h-4 text-indigo-600" />
+                      ) : (
+                        <ChevronDown className="w-4 h-4" />
+                      )}
+                    </button>
                   </div>
                 </div>
+
+                {/* 2. Mobile Clean 2-Line Row (No Horizontal Scroll) */}
+                <div
+                  onClick={() => setExpandedProductId(isExpanded ? null : p.id)}
+                  className="md:hidden px-3.5 py-3 cursor-pointer active:bg-slate-100 transition-colors select-none"
+                >
+                  {/* Line 1: Title & Price */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                      <span className="font-bold text-slate-900 text-sm truncate">
+                        {p.name}
+                      </span>
+                      {isLowStock && (
+                        <span className="text-[9px] font-black uppercase text-rose-700 bg-rose-100 px-1 py-0.2 rounded flex-shrink-0">
+                          Kritik
+                        </span>
+                      )}
+                      {p.isPackaged && (
+                        <span className="text-[9px] font-black uppercase text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded flex-shrink-0">
+                          Paket
+                        </span>
+                      )}
+                      {p.isActive === false && (
+                        <span className="text-[9px] font-black uppercase text-slate-500 bg-slate-200 px-1 py-0.2 rounded flex-shrink-0">
+                          Arşiv
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-sm font-black text-slate-900 flex-shrink-0">
+                      {formatCurrency(p.price)}
+                    </span>
+                  </div>
+
+                  {/* Line 2: Category, SKU & Stock Indicator */}
+                  <div className="flex items-center justify-between gap-2 mt-1.5 text-xs">
+                    <div className="flex items-center gap-1.5 text-slate-400 text-[11px] min-w-0 truncate">
+                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded flex-shrink-0">
+                        {p.category}
+                      </span>
+                      <span className="font-mono truncate">{p.sku}</span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <span className={`font-bold text-xs ${isLowStock ? "text-rose-600" : "text-emerald-700"}`}>
+                        {p.stock}{" "}
+                        {p.unit || (p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas") ? "m" : p.packageUnitName || "ad")}
+                      </span>
+                      <ChevronDown
+                        className={`w-4 h-4 text-slate-400 transition-transform ${
+                          isExpanded ? "rotate-180 text-indigo-600" : ""
+                        }`}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Collapsible Details Accordion */}
+                {isExpanded && (
+                  <div
+                    className="bg-slate-50/90 border-t border-slate-200 p-4 space-y-4 animate-fade-in"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {/* Dynamic Sector Attributes & Smart Badges */}
+                    {((p.metadata && Object.keys(p.metadata).length > 0) || (p.attributes && Object.keys(p.attributes).length > 0)) && (
+                      <div>
+                        <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider block mb-1.5">
+                          Sektörel Detaylar & Özellikler
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {/* Food SKT / Expiry Smart Badge */}
+                          {(() => {
+                            const expiry = p.metadata?.expiryDate || p.attributes?.SKT || p.attributes?.expiryDate;
+                            if (!expiry) return null;
+                            const expDate = new Date(expiry);
+                            const isExpired = !isNaN(expDate.getTime()) && expDate.getTime() < new Date().setHours(0, 0, 0, 0);
+                            const diffDays = Math.ceil((expDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                            const isExpiringSoon = !isExpired && diffDays <= 30;
+
+                            return (
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 border ${
+                                  isExpired
+                                    ? "bg-rose-100 text-rose-800 border-rose-300 animate-pulse"
+                                    : isExpiringSoon
+                                    ? "bg-amber-100 text-amber-800 border-amber-300"
+                                    : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                }`}
+                                title={`Son Tüketim Tarihi: ${expiry}`}
+                              >
+                                <Calendar className="w-3 h-3" />
+                                SKT: {expiry} {isExpired ? "(Geçmiş!)" : isExpiringSoon ? `(${diffDays} gün)` : ""}
+                              </span>
+                            );
+                          })()}
+
+                          {/* Food Batch/Lot Smart Badge */}
+                          {(() => {
+                            const batch = p.metadata?.batchNumber || p.attributes?.batchNumber;
+                            if (!batch) return null;
+                            return (
+                              <span className="text-[10px] bg-slate-100 border border-slate-200 text-slate-700 font-mono font-bold px-2 py-0.5 rounded-md">
+                                Lot: {batch}
+                              </span>
+                            );
+                          })()}
+
+                          {/* Spare Parts OEM / Part Number Smart Badge */}
+                          {(() => {
+                            const partNo = p.metadata?.partNumber || p.attributes?.partNumber || p.attributes?.SeriNo;
+                            if (!partNo) return null;
+                            return (
+                              <span className="text-[10px] bg-blue-50 border border-blue-200 text-blue-800 font-mono font-bold px-2 py-0.5 rounded-md flex items-center gap-1">
+                                <Wrench className="w-3 h-3 text-blue-600" />
+                                Parça No: {partNo}
+                              </span>
+                            );
+                          })()}
+
+                          {/* Spare Parts Vehicle Compatibility Smart Badge */}
+                          {(() => {
+                            const compat = p.metadata?.vehicleCompatibility || p.attributes?.vehicleCompatibility || p.attributes?.UyumluModel;
+                            if (!compat) return null;
+                            return (
+                              <span className="text-[10px] bg-indigo-50 border border-indigo-200 text-indigo-800 font-medium px-2 py-0.5 rounded-md">
+                                Uyum: {compat}
+                              </span>
+                            );
+                          })()}
+
+                          {/* Other dynamic attributes */}
+                          {Object.entries({ ...(p.attributes || {}), ...(p.metadata || {}) }).map(([key, val]) => {
+                            if (!val || ["expiryDate", "SKT", "batchNumber", "partNumber", "SeriNo", "vehicleCompatibility", "UyumluModel"].includes(key)) {
+                              return null;
+                            }
+                            return (
+                              <span key={key} className="text-[10px] bg-white border border-slate-200 text-slate-600 font-bold px-2 py-0.5 rounded-md shadow-xs">
+                                {key}: <span className="font-semibold text-slate-800">{String(val)}</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Packaged sub-unit stock section */}
+                    {p.isPackaged && (
+                      <div className="bg-emerald-50/50 p-3 rounded-xl border border-emerald-100 text-xs space-y-2">
+                        <div className="flex justify-between items-center">
+                          <div>
+                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide block">Koli/Paket İçi Stok</span>
+                            <span className="font-bold text-emerald-700">
+                              {p.subUnitStock} / {p.packageUnitsCount} {p.packageUnitName || "Birim"}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleExtractSubunit(p.id, 1)}
+                            className="p-1 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] rounded-lg flex items-center gap-1 active:scale-95 transition-all shadow-sm cursor-pointer"
+                            title={`${p.packageUnitName || "Birim"} Çıkar`}
+                          >
+                            <Scissors className="w-3 h-3" />
+                            1 {p.packageUnitName || "Birim"} Al
+                          </button>
+                        </div>
+                        <span className="text-[9px] text-slate-400 block leading-tight">
+                          İçinden alınan her parça stoğu düşürür. Sıfırlanırsa ana stoktan otomatik 1 paket açılır.
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Fabric Rolls Tracking Section (Textile / Rolls enabled only) */}
+                    {shouldShowRolls(p, sectorSettings?.activeSector) && (
+                      <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 text-xs space-y-2">
+                        <div className="flex justify-between items-center">
+                          <div>
+                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide block">Rulo / Top Takibi</span>
+                            <span className="font-bold text-indigo-700">
+                              {p.rolls?.length || 0} Adet Top ({p.stock} m)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedRollProduct(p)}
+                            className="p-1 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] rounded-lg flex items-center gap-1 active:scale-95 transition-all shadow-sm cursor-pointer"
+                            title="Top Detaylarını Düzenle"
+                          >
+                            <Layers className="w-3 h-3" />
+                            Topları Yönet
+                          </button>
+                        </div>
+                        {/* Tiny roll badge visualization */}
+                        {p.rolls && p.rolls.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1 max-h-[44px] overflow-y-auto">
+                            {p.rolls.slice(0, 5).map((r) => (
+                              <span
+                                key={r.id}
+                                className={`text-[9px] px-1.5 py-0.5 rounded font-bold font-mono ${
+                                  r.status === "sold"
+                                    ? "bg-slate-200 text-slate-500 line-through"
+                                    : r.status === "reserved"
+                                    ? "bg-amber-100 text-amber-700"
+                                    : "bg-emerald-100 text-emerald-800"
+                                }`}
+                              >
+                                {r.rollNumber} ({r.length}m)
+                              </span>
+                            ))}
+                            {p.rolls.length > 5 && (
+                              <span className="text-[9px] text-slate-400 font-bold font-mono px-1">
+                                +{p.rolls.length - 5} top daha...
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Legacy Fabric Stock Migration Option */}
+                        {(!p.rolls || p.rolls.length === 0) && p.stock > 0 && (
+                          <div className="bg-indigo-50/80 p-2.5 rounded-lg border border-indigo-200 flex items-center justify-between gap-2 mt-1">
+                            <div>
+                              <span className="text-[10px] font-bold text-indigo-900 block">Eski Kumaş Stoğu</span>
+                              <span className="text-[9px] text-indigo-600 block">{p.stock} metre için rulo kaydı oluşturun</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleInitializeRolls(p)}
+                              className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-[10px] font-bold flex items-center gap-1 cursor-pointer flex-shrink-0 shadow-sm"
+                            >
+                              <Scissors className="w-3 h-3" />
+                              Rulo Başlat
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Box / Parcel / Coupon Sub-unit System */}
+                    {p.boxes && p.boxes.length > 0 && (
+                      <div className="bg-amber-50/50 p-3 rounded-xl border border-amber-200 text-xs space-y-2">
+                        <div className="flex justify-between items-center">
+                          <div>
+                            <span className="text-[10px] text-amber-800 font-bold uppercase tracking-wide block">Koli / Kupon Takibi</span>
+                            <span className="font-bold text-amber-900">
+                              {p.boxes.length} Koli ({p.stock} Adet)
+                              {p.metersPerUnit ? ` — ${roundQty(p.stock * p.metersPerUnit)}m Eşdeğer` : ""}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-1 max-h-[44px] overflow-y-auto">
+                          {p.boxes.map((b) => (
+                            <span
+                              key={b.id}
+                              className={`text-[9px] px-1.5 py-0.5 rounded font-bold font-mono ${
+                                b.status === "depleted"
+                                  ? "bg-slate-200 text-slate-500 line-through"
+                                  : "bg-amber-100 text-amber-800"
+                              }`}
+                            >
+                              {b.boxNumber}: {b.quantity} ad {p.metersPerUnit ? `(${roundQty(b.quantity * p.metersPerUnit)}m)` : ""}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Action Bar */}
+                    <div className="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                      {/* Left: Quick Adjustments */}
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-bold text-slate-500">Stok:</span>
+                        <div className="flex items-center bg-white border border-slate-200 rounded-lg p-0.5 shadow-xs">
+                          <button
+                            type="button"
+                            onClick={() => adjustStock(p.id, p.stock, -1)}
+                            className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-rose-500 active:scale-90 transition-all cursor-pointer"
+                            title="1 Azalt"
+                          >
+                            <Minus className="w-3.5 h-3.5" />
+                          </button>
+                          <span className="px-2.5 text-xs font-bold text-slate-800 min-w-[28px] text-center">
+                            {p.stock}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => adjustStock(p.id, p.stock, 1)}
+                            className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-emerald-500 active:scale-90 transition-all cursor-pointer"
+                            title="1 Artır"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Right: Primary Operations */}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {p.isActive !== false && (
+                          <button
+                            type="button"
+                            onClick={() => setReplenishProduct(p)}
+                            title="Hızlı Stok Girişi Yap"
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 active:scale-95 transition-all shadow-xs cursor-pointer"
+                          >
+                            <TrendingUp className="w-3.5 h-3.5" />
+                            <span>Stok Ekle</span>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => setActiveQrProduct(p)}
+                          title="QR / Barkod Göster"
+                          className="px-2.5 py-1.5 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-slate-600 hover:text-indigo-600 font-bold text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                        >
+                          <QrCode className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">QR Kod</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setEditingProduct(p)}
+                          title="Ürünü Düzenle"
+                          className="px-2.5 py-1.5 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-slate-600 hover:text-indigo-600 font-bold text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Düzenle</span>
+                        </button>
+
+                        {p.isActive === false ? (
+                          onRestoreProduct && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (confirm(`"${p.name}" ürününü arşivden geri yüklemek istiyor musunuz?`)) {
+                                  onRestoreProduct(p.id);
+                                }
+                              }}
+                              title="Arşivden Geri Yükle"
+                              className="px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-lg text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer shadow-xs"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Geri Yükle</span>
+                            </button>
+                          )
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (confirm(`"${p.name}" ürününü arşive kaldırmak istediğinize emin misiniz? (Ürün geçmiş satışlarda korunmaya devam edecektir)`)) {
+                                onDeleteProduct(p.id);
+                              }
+                            }}
+                            title="Arşive Kaldır (Soft Delete)"
+                            className="px-2.5 py-1.5 bg-white hover:bg-rose-50 border border-slate-200 hover:border-rose-200 text-slate-500 hover:text-rose-600 font-bold text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Arşivle</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1675,11 +1921,40 @@ export function Inventory({
                       className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
                   </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1">Renk Kodu & Adı</label>
+                    <div className="flex gap-1">
+                      <input
+                        type="text"
+                        value={newRollColorCode}
+                        onChange={(e) => setNewRollColorCode(e.target.value)}
+                        placeholder="Kod: 01"
+                        className="w-1/2 px-2 py-2 border border-slate-200 bg-white rounded-lg text-xs"
+                      />
+                      <input
+                        type="text"
+                        value={newRollColorName}
+                        onChange={(e) => setNewRollColorName(e.target.value)}
+                        placeholder="Renk: Siyah"
+                        className="w-1/2 px-2 py-2 border border-slate-200 bg-white rounded-lg text-xs"
+                      />
+                    </div>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1">Gelen Firma / Tedarikçi</label>
+                    <input
+                      type="text"
+                      value={newRollSupplier}
+                      onChange={(e) => setNewRollSupplier(e.target.value)}
+                      placeholder="Örn: Akın Tekstil"
+                      className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs"
+                    />
+                  </div>
                   <div className="flex items-end">
                     <button
                       type="button"
                       onClick={handleAddRoll}
-                      className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1 transition-all"
+                      className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1 transition-all cursor-pointer"
                     >
                       <Plus className="w-4 h-4" />
                       Ruloyu Ekle
@@ -1763,9 +2038,25 @@ export function Inventory({
                                     {roll.status === "sold" ? "Satıldı" : roll.status === "reserved" ? "Rezerve" : "Satışta"}
                                   </span>
                                 </div>
-                                <span className="text-[11px] text-slate-400 block font-mono mt-0.5">
-                                  Uzunluk: <span className="font-extrabold text-slate-700">{roll.length} m</span> / {roll.initialLength} m
-                                </span>
+                                <div className="text-[11px] text-slate-500 space-y-0.5 mt-0.5 font-mono">
+                                  <div>
+                                    Uzunluk: <span className="font-extrabold text-slate-800">{roll.length} m</span> / {roll.initialLength} m
+                                    {roll.soldLength ? <span className="text-rose-500 ml-1">({roll.soldLength}m satıldı)</span> : ""}
+                                  </div>
+                                  {(roll.colorCode || roll.colorName || roll.supplier || roll.entryDate) && (
+                                    <div className="text-[10px] text-slate-400 font-sans flex flex-wrap gap-2">
+                                      {(roll.colorCode || roll.colorName) && (
+                                        <span>Renk: <strong className="text-slate-600">{roll.colorCode} {roll.colorName}</strong></span>
+                                      )}
+                                      {roll.supplier && (
+                                        <span>Firma: <strong className="text-slate-600">{roll.supplier}</strong></span>
+                                      )}
+                                      {roll.entryDate && (
+                                        <span>Tarih: {roll.entryDate}</span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           )}

@@ -22,7 +22,9 @@ import {
   Crown,
   CreditCard,
   ShieldAlert,
-  Mail
+  Mail,
+  MoreHorizontal,
+  RefreshCw
 } from "lucide-react";
 import { Product, Sale, SubscriptionEntitlement, TenantContext } from "./types";
 import { Dashboard } from "./components/Dashboard";
@@ -60,6 +62,7 @@ import { Auth } from "./components/Auth";
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [showMobileMoreDrawer, setShowMobileMoreDrawer] = useState(false);
 
   // Auth State
   const [user, setUser] = useState<any>(null);
@@ -74,6 +77,7 @@ export default function App() {
   // Email Verification State
   const [dismissEmailVerification, setDismissEmailVerification] = useState(false);
   const [resendingVerification, setResendingVerification] = useState(false);
+  const [checkingVerification, setCheckingVerification] = useState(false);
   const [verificationStatusMsg, setVerificationStatusMsg] = useState("");
 
   const handleResendEmailVerification = async () => {
@@ -88,6 +92,25 @@ export default function App() {
       setVerificationStatusMsg("Doğrulama e-postası şu an gönderilemedi. Lütfen daha sonra tekrar deneyin.");
     } finally {
       setResendingVerification(false);
+    }
+  };
+
+  const handleRefreshEmailVerification = async () => {
+    if (!auth.currentUser) return;
+    setCheckingVerification(true);
+    try {
+      await auth.currentUser.reload();
+      if (auth.currentUser.emailVerified) {
+        setVerificationStatusMsg("Tebrikler! E-posta adresiniz başarıyla doğrulandı.");
+        setTimeout(() => setDismissEmailVerification(true), 3000);
+      } else {
+        setVerificationStatusMsg("Henüz doğrulama onaylanmadı. Lütfen gelen kutunuzdaki bağlantıya tıklayın.");
+        setTimeout(() => setVerificationStatusMsg(""), 4000);
+      }
+    } catch (err: any) {
+      console.error("Reload verification error:", err);
+    } finally {
+      setCheckingVerification(false);
     }
   };
 
@@ -275,17 +298,17 @@ export default function App() {
 
   // Sales mutation (ACID Atomic Transaction)
   const handleRecordSale = async (
-    items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number }[],
+    items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number; selectedBoxId?: string }[],
     customerId?: string,
     amountPaid?: number,
     idempotencyKey?: string,
     paymentMethod?: string
-  ): Promise<void> => {
+  ): Promise<Sale> => {
     const uid = user?.uid || auth.currentUser?.uid;
     if (!uid) throw new Error("Oturum açık değil.");
 
-    // Execute atomic transaction for stock, rolls, sale record, customer ledger and payment
-    await processSaleTransaction(uid, {
+    // Execute atomic transaction for stock, rolls, boxes, sale record, customer ledger and payment
+    const saleResult = await processSaleTransaction(uid, {
       items,
       customerId,
       amountPaid,
@@ -294,6 +317,7 @@ export default function App() {
     });
 
     await fetchData(false);
+    return saleResult;
   };
 
   const handleSignOut = async () => {
@@ -378,14 +402,13 @@ export default function App() {
   };
 
   const navItems = [
-    { id: "dashboard", label: "Konsol", icon: LayoutDashboard },
-    { id: "inventory", label: "Ürünler & Stok", icon: Box },
-    { id: "sale", label: "Hızlı Satış Yap", icon: ShoppingCart },
-    { id: "orders", label: "Sipariş & İrsaliye", icon: FileText },
-    { id: "crm", label: "CRM & Veresiye", icon: Users },
-    { id: "scan", label: "QR Kod Tara", icon: QrCode },
-    { id: "history", label: "Satış Geçmişi", icon: HistoryIcon },
-    { id: "settings", label: "Sektörel Ayarlar", icon: Sliders }
+    { id: "dashboard", label: "Özet", icon: LayoutDashboard },
+    { id: "inventory", label: "Stok", icon: Box },
+    { id: "sale", label: "Satış", icon: ShoppingCart },
+    { id: "orders", label: "Belgeler", icon: FileText },
+    { id: "crm", label: "Cari Hesaplar", icon: Users },
+    { id: "history", label: "Raporlar", icon: HistoryIcon },
+    { id: "settings", label: "Ayarlar", icon: Sliders }
   ];
 
   if (isAuthLoading) {
@@ -408,21 +431,21 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#F8FAFC] text-slate-800 font-sans overflow-hidden">
-      {/* 1. Desktop Sticky Left Sidebar */}
-      <aside className="hidden md:flex flex-col w-64 bg-[#1E293B] text-slate-100 flex-shrink-0 border-r border-slate-700">
+      {/* 1. Desktop Sticky Left Sidebar (Sadeleştirilmiş EsnafPro tarzı) */}
+      <aside className="hidden md:flex flex-col w-60 bg-[#1E293B] text-slate-100 flex-shrink-0 border-r border-slate-700/60">
         {/* Branding */}
-        <div className="p-6 border-b border-slate-700 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-indigo-500 flex items-center justify-center text-white font-bold text-lg shadow-sm">
+        <div className="p-4 border-b border-slate-700/60 flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-black text-sm shadow-sm">
             S
           </div>
-          <div>
-            <h1 className="font-bold text-lg tracking-tight text-white leading-none">StokTakip Pro</h1>
-            <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mt-1">Kurumsal Sürüm v1.0</span>
+          <div className="min-w-0 flex-1">
+            <h1 className="font-bold text-sm tracking-tight text-white leading-tight">Stok-Pro</h1>
+            <span className="text-[10px] text-slate-400 font-medium block truncate">Hafif Stok & Satış SaaS</span>
           </div>
         </div>
 
         {/* Menu Items */}
-        <nav className="flex-1 py-6 px-4 space-y-2">
+        <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -437,24 +460,24 @@ export default function App() {
                   setScanSuccessMsg("");
                   setScanErrorMsg("");
                 }}
-                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                   isActive
-                    ? "bg-indigo-600/20 text-indigo-400"
-                    : "hover:bg-slate-800 text-slate-400"
+                    ? "bg-indigo-600 text-white shadow-sm"
+                    : "hover:bg-slate-800 text-slate-300 hover:text-white"
                 }`}
               >
-                <Icon className={`w-5 h-5 ${isActive ? "text-indigo-400" : "text-slate-400"}`} />
+                <Icon className={`w-4 h-4 ${isActive ? "text-white" : "text-slate-400"}`} />
                 <span>{item.label}</span>
               </button>
             );
           })}
         </nav>
 
-        {/* SaaS Subscription & Plan Badge */}
-        <div className="mx-4 mb-3 p-3.5 rounded-xl bg-slate-800/90 border border-slate-700/80 shadow-sm">
+        {/* Compact SaaS Subscription & Plan Badge */}
+        <div className="mx-3 mb-2 p-2.5 rounded-lg bg-slate-800/80 border border-slate-700/60 text-xs">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Abonelik</span>
-            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+            <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full ${
               entitlement?.isTrial 
                 ? "bg-amber-500/20 text-amber-300 border border-amber-400/30" 
                 : entitlement?.hasAccess 
@@ -468,35 +491,36 @@ export default function App() {
                 : "Sona Erdi"}
             </span>
           </div>
-          <span className="font-bold text-xs text-white block mt-1.5 truncate">
-            {entitlement?.plan?.name || "Pro Plan"}
-          </span>
-          <button
-            type="button"
-            onClick={() => { setBlockReason(undefined); setShowSubscriptionModal(true); }}
-            className="w-full mt-2.5 py-1.5 px-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-98"
-          >
-            <Zap className="w-3.5 h-3.5 text-indigo-200" />
-            <span>Planları Yönet</span>
-          </button>
+          <div className="flex items-center justify-between mt-1">
+            <span className="font-bold text-white text-[11px] truncate">
+              {entitlement?.plan?.name || "Pro Plan"}
+            </span>
+            <button
+              type="button"
+              onClick={() => { setBlockReason(undefined); setShowSubscriptionModal(true); }}
+              className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold underline cursor-pointer"
+            >
+              Yönet
+            </button>
+          </div>
         </div>
 
-        {/* User Card */}
-        <div className="p-4 border-t border-slate-700">
-          <div className="flex items-center gap-3 bg-slate-800/30 p-3 rounded-xl border border-slate-800/20">
-            <div className="w-8 h-8 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-xs border border-indigo-500/30">
+        {/* Compact User Card */}
+        <div className="p-3 border-t border-slate-700/60">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-full bg-indigo-600/30 text-indigo-300 flex items-center justify-center font-bold text-xs flex-shrink-0">
               {user.email ? user.email[0].toUpperCase() : "U"}
             </div>
             <div className="min-w-0 flex-1">
-              <span className="text-xs font-bold text-slate-200 block truncate">{user.email || "Kullanıcı"}</span>
-              <button 
-                onClick={handleSignOut}
-                className="text-[10px] font-bold text-rose-400 hover:text-rose-300 flex items-center gap-1 mt-0.5 transition-colors"
-              >
-                <LogOut className="w-3 h-3" />
-                <span>Çıkış Yap</span>
-              </button>
+              <span className="text-xs font-medium text-slate-300 block truncate">{user.email || "Kullanıcı"}</span>
             </div>
+            <button 
+              onClick={handleSignOut}
+              className="text-slate-400 hover:text-rose-400 p-1 rounded transition-colors cursor-pointer"
+              title="Çıkış Yap"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
       </aside>
@@ -602,19 +626,31 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
               {!verificationStatusMsg && (
-                <button
-                  type="button"
-                  disabled={resendingVerification}
-                  onClick={handleResendEmailVerification}
-                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/30 rounded-lg text-[11px] font-bold transition-all cursor-pointer disabled:opacity-50"
-                >
-                  {resendingVerification ? "Gönderiliyor..." : "Tekrar Gönder"}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    disabled={resendingVerification}
+                    onClick={handleResendEmailVerification}
+                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/30 rounded-lg text-[11px] font-bold transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {resendingVerification ? "Gönderiliyor..." : "Tekrar Gönder"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={checkingVerification}
+                    onClick={handleRefreshEmailVerification}
+                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/30 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50"
+                    title="Doğrulama durumunu sunucudan kontrol et"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${checkingVerification ? "animate-spin" : ""}`} />
+                    <span>Durumu Yenile</span>
+                  </button>
+                </>
               )}
               <button
                 type="button"
                 onClick={() => setDismissEmailVerification(true)}
-                className="p-1 text-amber-400 hover:text-white rounded-lg transition-colors"
+                className="p-1 text-amber-400 hover:text-white rounded-lg transition-colors cursor-pointer"
                 title="Kapat"
               >
                 <X className="w-3.5 h-3.5" />
@@ -751,32 +787,149 @@ export default function App() {
           )}
         </main>
 
-        {/* 3. Sticky Bottom Mobile Tab Bar Menu */}
-        <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 h-16 flex items-center justify-around px-2 z-10 shadow-lg">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => {
-                  if (item.id === "inventory") {
-                    setInventoryFilter(null);
-                  }
-                  setActiveTab(item.id);
-                  setScanSuccessMsg("");
-                  setScanErrorMsg("");
-                }}
-                className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-bold ${
-                  isActive ? "text-indigo-600" : "text-slate-400"
-                }`}
-              >
-                <Icon className={`w-5 h-5 mb-1 ${isActive ? "text-indigo-600" : "text-slate-400"}`} />
-                <span>{item.label === "Ürünler & Stok" ? "Envanter" : item.label}</span>
-              </button>
-            );
-          })}
+        {/* 3. Mobile Fixed Bottom Navigation Bar (5 Primary Buttons: Özet, Stok, Satış, Belgeler, Diğer) */}
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200 z-30 flex items-center justify-around py-1.5 px-2 shadow-lg">
+          <button
+            type="button"
+            onClick={() => { setActiveTab("dashboard"); setShowMobileMoreDrawer(false); }}
+            className={`flex flex-col items-center gap-0.5 text-[10px] font-bold py-1 px-2.5 rounded-lg transition-colors cursor-pointer ${
+              activeTab === "dashboard" && !showMobileMoreDrawer ? "text-indigo-600 font-extrabold" : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <LayoutDashboard className="w-5 h-5" />
+            <span>Özet</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => { setInventoryFilter(null); setActiveTab("inventory"); setShowMobileMoreDrawer(false); }}
+            className={`flex flex-col items-center gap-0.5 text-[10px] font-bold py-1 px-2.5 rounded-lg transition-colors cursor-pointer ${
+              activeTab === "inventory" && !showMobileMoreDrawer ? "text-indigo-600 font-extrabold" : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <Box className="w-5 h-5" />
+            <span>Stok</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => { setActiveTab("sale"); setShowMobileMoreDrawer(false); }}
+            className="flex flex-col items-center gap-0.5 -mt-3 cursor-pointer"
+          >
+            <div className={`w-11 h-11 rounded-full flex items-center justify-center shadow-md transition-transform active:scale-95 ${
+              activeTab === "sale" && !showMobileMoreDrawer ? "bg-indigo-600 text-white ring-4 ring-indigo-100" : "bg-indigo-600 text-white hover:bg-indigo-700"
+            }`}>
+              <ShoppingCart className="w-5 h-5" />
+            </div>
+            <span className="text-[10px] font-bold text-indigo-600">Satış</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => { setActiveTab("orders"); setShowMobileMoreDrawer(false); }}
+            className={`flex flex-col items-center gap-0.5 text-[10px] font-bold py-1 px-2.5 rounded-lg transition-colors cursor-pointer ${
+              activeTab === "orders" && !showMobileMoreDrawer ? "text-indigo-600 font-extrabold" : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <FileText className="w-5 h-5" />
+            <span>Belgeler</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowMobileMoreDrawer(!showMobileMoreDrawer)}
+            className={`flex flex-col items-center gap-0.5 text-[10px] font-bold py-1 px-2.5 rounded-lg transition-colors cursor-pointer ${
+              showMobileMoreDrawer || ["crm", "history", "settings", "scan"].includes(activeTab)
+                ? "text-indigo-600 font-extrabold"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            <MoreHorizontal className="w-5 h-5" />
+            <span>Diğer</span>
+          </button>
         </nav>
+
+        {/* Mobile 'Diğer' Drawer */}
+        <AnimatePresence>
+          {showMobileMoreDrawer && (
+            <motion.div
+              initial={{ opacity: 0, y: 100 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 100 }}
+              className="md:hidden fixed bottom-16 left-0 right-0 bg-white border-t border-slate-200 p-4 rounded-t-2xl shadow-2xl z-40 space-y-2.5"
+            >
+              <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                <span className="text-xs font-black text-slate-800 uppercase tracking-wider">Diğer İşlemler</span>
+                <button
+                  type="button"
+                  onClick={() => setShowMobileMoreDrawer(false)}
+                  className="p-1 text-slate-400 hover:text-slate-600 rounded cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs pt-1">
+                <button
+                  type="button"
+                  onClick={() => { setActiveTab("crm"); setShowMobileMoreDrawer(false); }}
+                  className={`p-3 rounded-xl border flex items-center gap-2.5 font-bold transition-all cursor-pointer ${
+                    activeTab === "crm" ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-slate-50 border-slate-100 text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  <Users className="w-4 h-4 text-indigo-500 flex-shrink-0" />
+                  <span className="truncate">Cari Hesaplar (CRM)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setActiveTab("scan"); setShowMobileMoreDrawer(false); }}
+                  className={`p-3 rounded-xl border flex items-center gap-2.5 font-bold transition-all cursor-pointer ${
+                    activeTab === "scan" ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-slate-50 border-slate-100 text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  <QrCode className="w-4 h-4 text-indigo-500 flex-shrink-0" />
+                  <span className="truncate">QR / Barkod Tara</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setActiveTab("history"); setShowMobileMoreDrawer(false); }}
+                  className={`p-3 rounded-xl border flex items-center gap-2.5 font-bold transition-all cursor-pointer ${
+                    activeTab === "history" ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-slate-50 border-slate-100 text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  <HistoryIcon className="w-4 h-4 text-indigo-500 flex-shrink-0" />
+                  <span className="truncate">Geçmiş & Raporlar</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setActiveTab("settings"); setShowMobileMoreDrawer(false); }}
+                  className={`p-3 rounded-xl border flex items-center gap-2.5 font-bold transition-all cursor-pointer ${
+                    activeTab === "settings" ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-slate-50 border-slate-100 text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  <Sliders className="w-4 h-4 text-indigo-500 flex-shrink-0" />
+                  <span className="truncate">Sektörel Ayarlar</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { 
+                    setShowMobileMoreDrawer(false);
+                    setBlockReason(undefined);
+                    setShowSubscriptionModal(true);
+                  }}
+                  className="p-3 rounded-xl border border-indigo-100 bg-indigo-50/50 hover:bg-indigo-50 text-indigo-700 flex items-center gap-2.5 font-bold transition-all col-span-2 cursor-pointer"
+                >
+                  <Crown className="w-4 h-4 text-amber-500 flex-shrink-0" />
+                  <span className="truncate">Abonelik & Plan Yönetimi ({entitlement?.plan?.name || "Pro Plan"})</span>
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* 4. Scanner Action Overlay Modal Sheet */}

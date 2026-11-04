@@ -342,13 +342,15 @@ export class DataExportService implements IDataExportService, IBackupService {
     }
 
     const columns: CsvColumn<typeof rollItems[0]>[] = [
-      { header: "Rulo / Top No", accessor: item => item.roll.rollNumber },
       { header: "Ürün Adı", accessor: item => item.productName },
-      { header: "SKU", accessor: item => item.sku },
-      { header: "Kategori", accessor: item => item.category },
-      { header: "Kalan Metraj", accessor: item => item.roll.length },
-      { header: "Başlangıç Metrajı", accessor: item => item.roll.initialLength },
-      { header: "Kesilen / Satılan Metre", accessor: item => item.roll.soldLength || (item.roll.initialLength - item.roll.length) },
+      { header: "Renk Kodu", accessor: item => item.roll.colorCode || "" },
+      { header: "Renk", accessor: item => item.roll.colorName || item.roll.color || "" },
+      { header: "Rulo / Top No", accessor: item => item.roll.rollNumber },
+      { header: "Başlangıç Metresi", accessor: item => formatQtyForCsv(item.roll.initialLength) },
+      { header: "Kalan Metre", accessor: item => formatQtyForCsv(item.roll.length) },
+      { header: "Satılan Metre", accessor: item => formatQtyForCsv(item.roll.soldLength || Math.max(0, item.roll.initialLength - item.roll.length)) },
+      { header: "Giriş Tarihi", accessor: item => item.roll.entryDate || formatDateForCsv(item.roll.createdAt) },
+      { header: "Gelen Firma", accessor: item => item.roll.supplier || "" },
       { 
         header: "Durum", 
         accessor: item => item.roll.status === "available" ? "Müsait" : item.roll.status === "sold" ? "Tükendi" : "Rezerve" 

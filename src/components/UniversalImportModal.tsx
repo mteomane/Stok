@@ -360,14 +360,27 @@ export function UniversalImportModal({
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handleDownloadTemplate}
-                  className="flex items-center gap-2 px-3.5 py-2 bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 font-bold rounded-lg transition-all shadow-sm flex-shrink-0 cursor-pointer text-xs"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Excel Şablonu İndir (.xlsx)</span>
-                </button>
+                <div className="flex flex-col sm:flex-row gap-2 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleDownloadTemplate}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 font-bold rounded-lg transition-all shadow-sm cursor-pointer text-xs"
+                    title="Genel sektörler için çok amaçlı ürün yükleme şablonu"
+                  >
+                    <Download className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Genel Ürün Şablonu</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => importService.downloadTextileRollTemplateXlsx()}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-all shadow-sm cursor-pointer text-xs"
+                    title="Tekstil kumaş ve rulo girişi için özel 7 kolonlu şablon (Ürün Adı, Renk Kodu, Renk, Metre, Adet, Tarih, Gelen Firma)"
+                  >
+                    <Download className="w-3.5 h-3.5 text-emerald-100" />
+                    <span>Tekstil Rulo Şablonu (7 Kolon)</span>
+                  </button>
+                </div>
               </div>
 
               {/* Drag & Drop Zone */}

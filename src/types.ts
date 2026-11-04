@@ -1,10 +1,34 @@
 export interface FabricRoll {
   id: string;
   rollNumber: string; // e.g. "Top #1", "Top #2"
-  length: number;    // current length in meters
+  productId?: string;
+  length: number;    // current remaining length in meters
   initialLength: number; // original length in meters
   soldLength?: number;   // total cut/sold amount in meters
+  colorCode?: string;    // Renk Kodu
+  colorName?: string;    // Renk Adı
+  color?: string;        // Renk Adı (alias)
+  entryDate?: string;    // Giriş Tarihi (YYYY-MM-DD)
+  supplier?: string;     // Gelen Firma / Tedarikçi
   status: 'available' | 'sold' | 'reserved';
+  createdAt?: string;
+  updatedAt?: string;
+  notes?: string;
+}
+
+export interface ProductBox {
+  id: string;
+  productId?: string;
+  boxNumber: string; // e.g. "Koli A", "Koli #1"
+  initialQuantity: number; // İlk gelen adet (örn: 50)
+  quantity: number;        // Kalan güncel adet (örn: 49)
+  soldQuantity?: number;   // Çıkış yapılan / satılan adet
+  entryDate?: string;      // Giriş Tarihi
+  supplier?: string;       // Gelen Firma
+  status: 'available' | 'depleted' | 'reserved';
+  createdAt?: string;
+  updatedAt?: string;
+  notes?: string;
 }
 
 export type TenantRole = 'owner' | 'admin' | 'staff' | 'cashier';
@@ -189,6 +213,10 @@ export interface Product {
 
   // Kumaş topları takibi (Tekstil sektöründe veya rulo takibinde opsiyonel)
   rolls?: FabricRoll[];
+
+  // Koli / Paket / Kupon bazlı stok takibi
+  boxes?: ProductBox[];
+  metersPerUnit?: number; // Birim başına metre eşdeğeri (örn: 1 kupon paketi = 3 metre)
 }
 
 export interface SaleItem {
@@ -196,6 +224,12 @@ export interface SaleItem {
   productName: string;
   quantity: number;
   price: number;
+  selectedRollId?: string;
+  selectedRollNumber?: string;
+  selectedBoxId?: string;
+  selectedBoxNumber?: string;
+  cutLength?: number;
+  unit?: string;
 }
 
 export interface Sale {
@@ -222,6 +256,7 @@ export interface CartItem {
   product: Product;
   quantity: number;
   selectedRollId?: string; // Optional specific fabric roll selected for sale
+  selectedBoxId?: string;  // Optional specific box selected for sale
   cutLength?: number;       // Optional length cut from the roll
 }
 
@@ -351,7 +386,10 @@ export interface OrderItem {
   price: number;
   rollId?: string; // If specific fabric roll was sold
   rollNumber?: string; // If specific fabric roll
+  boxId?: string;  // If specific box was sold
+  boxNumber?: string;
   cutLength?: number; // If cut length
+  unit?: string;
 }
 
 export interface Order {

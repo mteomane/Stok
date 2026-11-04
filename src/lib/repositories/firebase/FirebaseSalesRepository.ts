@@ -224,6 +224,20 @@ export class FirebaseSalesRepository implements SalesRepository {
           roll.soldLength = roundQty(Math.max(0, initLen - updatedLen));
           roll.status = updatedLen <= 0 ? "sold" : (roll.status === "reserved" ? "reserved" : "available");
           prod.stock = roundQty(prod.rolls.reduce((sum, r) => sum + (Number(r.length) || 0), 0));
+        } else if (item.selectedBoxId && prod.boxes) {
+          const box = prod.boxes.find(b => b.id === item.selectedBoxId);
+          if (!box) throw new Error(`Koli bulunamadı: ID ${item.selectedBoxId}`);
+          const currentQty = Number(box.quantity);
+          if (currentQty < qtyToDeduct) {
+            throw new Error(`Seçilen kolide (${box.boxNumber}) yeterli adet kalmadı! Kalan: ${currentQty} (Talep edilen: ${qtyToDeduct})`);
+          }
+          const initQty = box.initialQuantity !== undefined ? Number(box.initialQuantity) : currentQty;
+          box.initialQuantity = initQty;
+          const updatedQty = roundQty(Math.max(0, currentQty - qtyToDeduct));
+          box.quantity = updatedQty;
+          box.soldQuantity = roundQty((box.soldQuantity || 0) + qtyToDeduct);
+          box.status = updatedQty <= 0 ? "depleted" : "available";
+          prod.stock = roundQty(prod.boxes.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0));
         } else {
           if (prod.stock < qtyToDeduct) {
             throw new Error(`Yetersiz Stok: "${prod.name}" için mevcut stok: ${prod.stock}, istenen miktar: ${qtyToDeduct}`);
@@ -246,6 +260,22 @@ export class FirebaseSalesRepository implements SalesRepository {
               }
             }
             prod.stock = roundQty(prod.rolls.reduce((sum, r) => sum + (Number(r.length) || 0), 0));
+          } else if (prod.boxes && prod.boxes.length > 0) {
+            let remainingDeduct = qtyToDeduct;
+            for (const box of prod.boxes) {
+              const bQty = Number(box.quantity);
+              if (box.status === "available" && bQty > 0 && remainingDeduct > 0) {
+                const dec = roundQty(Math.min(bQty, remainingDeduct));
+                remainingDeduct = roundQty(remainingDeduct - dec);
+                const initQty = box.initialQuantity !== undefined ? Number(box.initialQuantity) : bQty;
+                box.initialQuantity = initQty;
+                const updatedQty = roundQty(Math.max(0, bQty - dec));
+                box.quantity = updatedQty;
+                box.soldQuantity = roundQty((box.soldQuantity || 0) + dec);
+                box.status = updatedQty <= 0 ? "depleted" : "available";
+              }
+            }
+            prod.stock = roundQty(prod.boxes.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0));
           }
         }
 
@@ -260,6 +290,7 @@ export class FirebaseSalesRepository implements SalesRepository {
           quantity: lineQty,
           price: prod.price,
           selectedRollId: item.selectedRollId,
+          selectedBoxId: item.selectedBoxId,
           cutLength: item.cutLength !== undefined ? roundQty(Number(item.cutLength)) : undefined
         });
 
@@ -491,6 +522,20 @@ export class FirebaseSalesRepository implements SalesRepository {
             roll.soldLength = roundQty(Math.max(0, initLen - updatedLen));
             roll.status = updatedLen <= 0 ? "sold" : (roll.status === "reserved" ? "reserved" : "available");
             prod.stock = roundQty(prod.rolls.reduce((sum: number, r: FabricRoll) => sum + (Number(r.length) || 0), 0));
+          } else if (item.selectedBoxId && prod.boxes) {
+            const box = prod.boxes.find((b: any) => b.id === item.selectedBoxId);
+            if (!box) throw new Error(`Koli bulunamadı: ID ${item.selectedBoxId}`);
+            const currentQty = Number(box.quantity);
+            if (currentQty < qtyToDeduct) {
+              throw new Error(`Seçilen kolide (${box.boxNumber}) yeterli adet kalmadı! Kalan: ${currentQty} (Talep edilen: ${qtyToDeduct})`);
+            }
+            const initQty = box.initialQuantity !== undefined ? Number(box.initialQuantity) : currentQty;
+            box.initialQuantity = initQty;
+            const updatedQty = roundQty(Math.max(0, currentQty - qtyToDeduct));
+            box.quantity = updatedQty;
+            box.soldQuantity = roundQty((box.soldQuantity || 0) + qtyToDeduct);
+            box.status = updatedQty <= 0 ? "depleted" : "available";
+            prod.stock = roundQty(prod.boxes.reduce((sum: number, b: any) => sum + (Number(b.quantity) || 0), 0));
           } else {
             if (prod.stock < qtyToDeduct) {
               throw new Error(`Stok Yetersiz: "${prod.name}" için mevcut stok: ${prod.stock}, istenen miktar: ${qtyToDeduct}`);
@@ -513,6 +558,22 @@ export class FirebaseSalesRepository implements SalesRepository {
                 }
               }
               prod.stock = roundQty(prod.rolls.reduce((sum: number, r: FabricRoll) => sum + (Number(r.length) || 0), 0));
+            } else if (prod.boxes && prod.boxes.length > 0) {
+              let remainingDeduct = qtyToDeduct;
+              for (const box of prod.boxes) {
+                const bQty = Number(box.quantity);
+                if (box.status === "available" && bQty > 0 && remainingDeduct > 0) {
+                  const dec = roundQty(Math.min(bQty, remainingDeduct));
+                  remainingDeduct = roundQty(remainingDeduct - dec);
+                  const initQty = box.initialQuantity !== undefined ? Number(box.initialQuantity) : bQty;
+                  box.initialQuantity = initQty;
+                  const updatedQty = roundQty(Math.max(0, bQty - dec));
+                  box.quantity = updatedQty;
+                  box.soldQuantity = roundQty((box.soldQuantity || 0) + dec);
+                  box.status = updatedQty <= 0 ? "depleted" : "available";
+                }
+              }
+              prod.stock = roundQty(prod.boxes.reduce((sum: number, b: any) => sum + (Number(b.quantity) || 0), 0));
             }
           }
 
@@ -528,6 +589,7 @@ export class FirebaseSalesRepository implements SalesRepository {
             price: prod.price
           };
           if (item.selectedRollId) cleanSaleItem.selectedRollId = item.selectedRollId;
+          if (item.selectedBoxId) cleanSaleItem.selectedBoxId = item.selectedBoxId;
           if (item.cutLength !== undefined) cleanSaleItem.cutLength = roundQty(Number(item.cutLength));
           saleItems.push(cleanSaleItem);
 
@@ -548,7 +610,7 @@ export class FirebaseSalesRepository implements SalesRepository {
             timestamp: new Date().toISOString(),
             notes: item.selectedRollId 
               ? `Satış Fişi #${saleRef.id} - Kumaş Topu Kesimi (Top ID: ${item.selectedRollId})`
-              : `Satış Fişi #${saleRef.id}`
+              : (item.selectedBoxId ? `Satış Fişi #${saleRef.id} - Koli Çıkışı (Koli ID: ${item.selectedBoxId})` : `Satış Fişi #${saleRef.id}`)
           };
           if (prod.warehouseId) cleanMovement.warehouseId = prod.warehouseId;
           stockMovementsToCreate.push(cleanMovement);
@@ -577,7 +639,8 @@ export class FirebaseSalesRepository implements SalesRepository {
           const pDocRef = doc(this.db, "products", pId);
           transaction.update(pDocRef, {
             stock: updatedProd.stock,
-            ...(updatedProd.rolls ? { rolls: updatedProd.rolls } : {})
+            ...(updatedProd.rolls ? { rolls: updatedProd.rolls } : {}),
+            ...(updatedProd.boxes ? { boxes: updatedProd.boxes } : {})
           });
         }
 
@@ -790,6 +853,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         const qtyToRestore = roundQty(Number(item.quantity));
         const previousStock = roundQty(Number(prod.stock || 0));
         const rollId = (item as any).selectedRollId || (item as any).rollId;
+        const boxId = (item as any).selectedBoxId || (item as any).boxId;
 
         if (rollId && prod.rolls) {
           const roll = prod.rolls.find(r => r.id === rollId);
@@ -802,6 +866,20 @@ export class FirebaseSalesRepository implements SalesRepository {
               roll.status = "available";
             }
             prod.stock = roundQty(prod.rolls.reduce((sum, r) => sum + (Number(r.length) || 0), 0));
+          } else {
+            prod.stock = roundQty(previousStock + qtyToRestore);
+          }
+        } else if (boxId && prod.boxes) {
+          const box = prod.boxes.find((b: any) => b.id === boxId);
+          if (box) {
+            const currentQty = Number(box.quantity);
+            const updatedQty = roundQty(currentQty + qtyToRestore);
+            box.quantity = updatedQty;
+            box.soldQuantity = roundQty(Math.max(0, (box.soldQuantity || 0) - qtyToRestore));
+            if (box.status === "depleted" && updatedQty > 0) {
+              box.status = "available";
+            }
+            prod.stock = roundQty(prod.boxes.reduce((sum: number, b: any) => sum + (Number(b.quantity) || 0), 0));
           } else {
             prod.stock = roundQty(previousStock + qtyToRestore);
           }
@@ -966,6 +1044,7 @@ export class FirebaseSalesRepository implements SalesRepository {
           const qtyToRestore = roundQty(Number(item.quantity));
           const previousStock = roundQty(Number(prod.stock || 0));
           const rollId = (item as any).selectedRollId || (item as any).rollId;
+          const boxId = (item as any).selectedBoxId || (item as any).boxId;
 
           if (rollId && prod.rolls) {
             const roll = prod.rolls.find((r: FabricRoll) => r.id === rollId);
@@ -978,6 +1057,20 @@ export class FirebaseSalesRepository implements SalesRepository {
                 roll.status = "available";
               }
               prod.stock = roundQty(prod.rolls.reduce((sum: number, r: FabricRoll) => sum + (Number(r.length) || 0), 0));
+            } else {
+              prod.stock = roundQty(previousStock + qtyToRestore);
+            }
+          } else if (boxId && prod.boxes) {
+            const box = prod.boxes.find((b: any) => b.id === boxId);
+            if (box) {
+              const currentQty = Number(box.quantity);
+              const updatedQty = roundQty(currentQty + qtyToRestore);
+              box.quantity = updatedQty;
+              box.soldQuantity = roundQty(Math.max(0, (box.soldQuantity || 0) - qtyToRestore));
+              if (box.status === "depleted" && updatedQty > 0) {
+                box.status = "available";
+              }
+              prod.stock = roundQty(prod.boxes.reduce((sum: number, b: any) => sum + (Number(b.quantity) || 0), 0));
             } else {
               prod.stock = roundQty(previousStock + qtyToRestore);
             }
@@ -1023,7 +1116,8 @@ export class FirebaseSalesRepository implements SalesRepository {
           const pDocRef = doc(this.db, "products", pId);
           transaction.update(pDocRef, {
             stock: updatedProd.stock,
-            ...(updatedProd.rolls ? { rolls: updatedProd.rolls } : {})
+            ...(updatedProd.rolls ? { rolls: updatedProd.rolls } : {}),
+            ...(updatedProd.boxes ? { boxes: updatedProd.boxes } : {})
           });
         }
 
