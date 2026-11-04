@@ -38,7 +38,7 @@ jobs:
         run: npm ci --legacy-peer-deps
 
       - name: Install Firebase CLI for emulator tests
-        run: npm install --global firebase-tools@15.34.1
+        run: npm install --global firebase-tools@15.34.2
 
       - name: TypeScript lint
         run: npm run lint
