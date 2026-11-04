@@ -51,25 +51,34 @@ jobs:
         run: |
           if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Firebase preview deployment was skipped because FIREBASE_SERVICE_ACCOUNT_STOK_PRO_911B4 is not configured yet."
+            echo "::notice::Preview deployment skipped: add the Firebase service-account secret to enable it."
           else
             echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Deploy to Firebase Hosting preview channel
-        id: firebase_hosting_preview
-        if: steps.firebase_credentials.outputs.configured == 'true'
+      - name: Deploy pull request preview
+        id: firebase_pr_preview
+        if: github.event_name == 'pull_request' && steps.firebase_credentials.outputs.configured == 'true'
         uses: FirebaseExtended/action-hosting-deploy@v0.11.0
         with:
           repoToken: "${{ secrets.GITHUB_TOKEN }}"
           firebaseServiceAccount: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_STOK_PRO_911B4 }}"
           projectId: stok-pro-911b4
-          channelId: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'stokpro-review' }}
+          expires: 14d
+
+      - name: Deploy development branch preview
+        id: firebase_branch_preview
+        if: github.event_name != 'pull_request' && steps.firebase_credentials.outputs.configured == 'true'
+        uses: FirebaseExtended/action-hosting-deploy@v0.11.0
+        with:
+          firebaseServiceAccount: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_STOK_PRO_911B4 }}"
+          projectId: stok-pro-911b4
+          channelId: stokpro-review
           expires: 14d
 
       - name: Add preview link to the development pull request
-        if: github.event_name == 'push' && steps.firebase_credentials.outputs.configured == 'true'
+        if: github.event_name != 'pull_request' && steps.firebase_credentials.outputs.configured == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PREVIEW_URL: ${{ steps.firebase_hosting_preview.outputs.url }}
+          PREVIEW_URL: ${{ steps.firebase_branch_preview.outputs.url }}
         run: gh pr comment 1 --body "Stok-Pro test preview: ${PREVIEW_URL} (14 gün geçerlidir). Bu adres gerçek Firebase projesiyle konuşur; yalnızca test işletmesi kullanın."
