@@ -230,6 +230,8 @@ export interface SaleItem {
   selectedBoxNumber?: string;
   cutLength?: number;
   unit?: string;
+  rollAllocations?: Array<{ rollId: string; length: number }>;
+  boxAllocations?: Array<{ boxId: string; quantity: number }>;
 }
 
 export interface Sale {
@@ -258,6 +260,8 @@ export interface CartItem {
   selectedRollId?: string; // Optional specific fabric roll selected for sale
   selectedBoxId?: string;  // Optional specific box selected for sale
   cutLength?: number;       // Optional length cut from the roll
+  selectedBoxNumber?: string;
+  unit?: string;
 }
 
 export interface CustomerTransaction {
