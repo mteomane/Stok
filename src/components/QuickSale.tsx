@@ -179,6 +179,9 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
         setError(`Satışa uygun toplarda yeterli kumaş yok! Kullanılabilir: ${availableRollLength} m`);
         return;
       }
+    } else if (isFabric && (!product.rolls || product.rolls.length === 0) && product.stock < requiredQuantity) {
+      setError(`Stok yetersiz! Mevcut kumaş stoğu: ${product.stock} m`);
+      return;
     } else if (finalBoxId) {
       const selectedBox = product.boxes?.find(b => b.id === finalBoxId);
       if (!selectedBox || selectedBox.status !== "available") {
@@ -223,6 +226,9 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
             setError(`Satışa uygun toplarda yeterli kumaş yok! Kullanılabilir: ${availableRollLength} m`);
             return;
           }
+        } else if (product.stock < newCutLen) {
+          setError(`Stok yetersiz! Mevcut kumaş stoğu: ${product.stock} m`);
+          return;
         }
         updatedCart[existingIndex].cutLength = newCutLen;
         updatedCart[existingIndex].quantity = newCutLen;
