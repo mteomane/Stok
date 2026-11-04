@@ -6,7 +6,6 @@ import {
   ShoppingCart,
   QrCode,
   History as HistoryIcon,
-  Menu,
   X,
   User,
   Plus,
@@ -61,7 +60,6 @@ import { Auth } from "./components/Auth";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showMobileMoreDrawer, setShowMobileMoreDrawer] = useState(false);
 
   // Auth State
@@ -552,51 +550,8 @@ export default function App() {
             >
               <LogOut className="w-5 h-5" />
             </button>
-            <button
-              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className="p-2 text-slate-400 hover:text-white"
-            >
-              {isMobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-            </button>
           </div>
         </header>
-
-        {/* Mobile Navigation Drawer */}
-        <AnimatePresence>
-          {isMobileMenuOpen && (
-            <motion.div
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="absolute top-16 left-0 right-0 bg-slate-900 border-b border-slate-800 p-4 space-y-1 z-10 md:hidden"
-            >
-              {navItems.map((item) => {
-                const Icon = item.icon;
-                const isActive = activeTab === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => {
-                      if (item.id === "inventory") {
-                        setInventoryFilter(null);
-                      }
-                      setActiveTab(item.id);
-                      setIsMobileMenuOpen(false);
-                      setScanSuccessMsg("");
-                      setScanErrorMsg("");
-                    }}
-                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all ${
-                      isActive ? "bg-indigo-600 text-white" : "text-slate-400 hover:bg-slate-800/30"
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" />
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         {/* Trial Expired / Subscription Inactive Global Warning */}
         {entitlement && !entitlement.hasAccess && (
@@ -660,7 +615,7 @@ export default function App() {
         )}
 
         {/* Inner Content Scroller */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 pb-20 md:pb-8">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 pb-[calc(env(safe-area-inset-bottom)+5rem)] md:pb-8">
           {isLoading ? (
             <div className="flex flex-col items-center justify-center h-full space-y-3">
               <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
@@ -778,7 +733,7 @@ export default function App() {
                     sales={sales} 
                     products={products} 
                     onRefreshData={fetchData} 
-                    currentUserRole={tenantContext?.role || "owner"} 
+                    currentUserRole={tenantContext?.role} 
                   />
                 )}
                 {activeTab === "settings" && (
@@ -795,7 +750,7 @@ export default function App() {
         </main>
 
         {/* 3. Mobile Fixed Bottom Navigation Bar (5 Primary Buttons: Özet, Stok, Satış, Belgeler, Diğer) */}
-        <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200 z-30 flex items-center justify-around py-1.5 px-2 shadow-lg">
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200 z-30 flex items-center justify-around pt-1.5 pb-[calc(env(safe-area-inset-bottom)+0.375rem)] px-2 shadow-lg">
           <button
             type="button"
             onClick={() => { setActiveTab("dashboard"); setShowMobileMoreDrawer(false); }}

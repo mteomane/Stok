@@ -344,6 +344,114 @@ export async function runProductionRepositoryTests() {
     );
 
     // -------------------------------------------------------------
+    // SENARYO 3B: FIFO KUMAŞ TOPU SATIŞI VE TAM İPTAL İADESİ
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3B: FIFO kumaş topu dağılım kaydı ve iptal iadesi ---");
+    const fifoFabricProduct = await productRepoA.create("usr_repo_owner_a", {
+      name: "FIFO Test Pamuk Kumaş",
+      sku: "FIFO-FAB-001",
+      category: "Kumaş",
+      unit: "Metre",
+      price: 100,
+      stock: 5,
+      minStock: 0,
+      rolls: [
+        { id: "fifo_roll_1", rollNumber: "FIFO Top 1", length: 2, initialLength: 2, status: "available" },
+        { id: "fifo_roll_2", rollNumber: "FIFO Top 2", length: 3, initialLength: 3, status: "available" }
+      ]
+    });
+    const fifoFabricSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{ productId: fifoFabricProduct.id, quantity: 3 }],
+      amountPaid: 0,
+      idempotencyKey: "fifo_fabric_sale_001"
+    });
+    const fifoFabricAfterSale = await productRepoA.getById(fifoFabricProduct.id, "usr_repo_owner_a");
+    const fifoFabricAllocations = fifoFabricSale.items[0]?.rollAllocations || [];
+    recordResult(
+      Boolean(
+        fifoFabricAfterSale?.stock === 2 &&
+        fifoFabricAfterSale?.rolls?.[0]?.length === 0 &&
+        fifoFabricAfterSale?.rolls?.[1]?.length === 2 &&
+        fifoFabricAllocations.length === 2 &&
+        fifoFabricAllocations[0]?.rollId === "fifo_roll_1" &&
+        fifoFabricAllocations[0]?.length === 2 &&
+        fifoFabricAllocations[1]?.rollId === "fifo_roll_2" &&
+        fifoFabricAllocations[1]?.length === 1
+      ),
+      "FIFO satışında hangi kumaş topundan kaç metre çıktığı fişe kaydedilir"
+    );
+    const fifoFabricCancel = await salesRepoA.cancelSale(
+      fifoFabricSale.id,
+      "usr_repo_owner_a",
+      "FIFO iade testi",
+      "fifo_fabric_cancel_001"
+    );
+    const fifoFabricAfterCancel = await productRepoA.getById(fifoFabricProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(
+        fifoFabricCancel.stockRestored === true &&
+        fifoFabricAfterCancel?.stock === 5 &&
+        fifoFabricAfterCancel?.rolls?.[0]?.length === 2 &&
+        fifoFabricAfterCancel?.rolls?.[1]?.length === 3
+      ),
+      "FIFO kumaş satış iptali metreleri doğru toplara eksiksiz iade eder"
+    );
+
+    // -------------------------------------------------------------
+    // SENARYO 3C: FIFO KOLİ SATIŞI VE TAM İPTAL İADESİ
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3C: FIFO koli dağılım kaydı ve iptal iadesi ---");
+    const fifoBoxProduct = await productRepoA.create("usr_repo_owner_a", {
+      name: "FIFO Test Kupon Paketi",
+      sku: "FIFO-BOX-001",
+      category: "Genel",
+      unit: "Adet",
+      price: 25,
+      stock: 5,
+      minStock: 0,
+      boxes: [
+        { id: "fifo_box_1", boxNumber: "FIFO Koli 1", quantity: 2, initialQuantity: 2, status: "available" },
+        { id: "fifo_box_2", boxNumber: "FIFO Koli 2", quantity: 3, initialQuantity: 3, status: "available" }
+      ]
+    });
+    const fifoBoxSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{ productId: fifoBoxProduct.id, quantity: 3 }],
+      amountPaid: 0,
+      idempotencyKey: "fifo_box_sale_001"
+    });
+    const fifoBoxAfterSale = await productRepoA.getById(fifoBoxProduct.id, "usr_repo_owner_a");
+    const fifoBoxAllocations = fifoBoxSale.items[0]?.boxAllocations || [];
+    recordResult(
+      Boolean(
+        fifoBoxAfterSale?.stock === 2 &&
+        fifoBoxAfterSale?.boxes?.[0]?.quantity === 0 &&
+        fifoBoxAfterSale?.boxes?.[1]?.quantity === 2 &&
+        fifoBoxAllocations.length === 2 &&
+        fifoBoxAllocations[0]?.boxId === "fifo_box_1" &&
+        fifoBoxAllocations[0]?.quantity === 2 &&
+        fifoBoxAllocations[1]?.boxId === "fifo_box_2" &&
+        fifoBoxAllocations[1]?.quantity === 1
+      ),
+      "FIFO satışında hangi koliden kaç adet çıktığı fişe kaydedilir"
+    );
+    const fifoBoxCancel = await salesRepoA.cancelSale(
+      fifoBoxSale.id,
+      "usr_repo_owner_a",
+      "FIFO koli iade testi",
+      "fifo_box_cancel_001"
+    );
+    const fifoBoxAfterCancel = await productRepoA.getById(fifoBoxProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(
+        fifoBoxCancel.stockRestored === true &&
+        fifoBoxAfterCancel?.stock === 5 &&
+        fifoBoxAfterCancel?.boxes?.[0]?.quantity === 2 &&
+        fifoBoxAfterCancel?.boxes?.[1]?.quantity === 3
+      ),
+      "FIFO koli satış iptali adetleri doğru kolilere eksiksiz iade eder"
+    );
+
+    // -------------------------------------------------------------
     // SENARYO 4: SİPARİŞ OLUŞTURMA VE ATOMİK İPTAL İLE METRAJ İADESİ
     // -------------------------------------------------------------
     console.log("\n--- BÖLÜM 4: FirebaseOrderRepository (createAtomic & cancelOrderAtomic) ---");

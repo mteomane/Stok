@@ -27,6 +27,7 @@ import { ReceiptPrintModal } from "./ReceiptPrintModal";
 import { SalesReportModal } from "./SalesReportModal";
 import { exportService } from "../lib/export/ExportService";
 import { triggerFileDownload } from "../lib/export/fileDownload";
+import { calculateSalesMetrics, isCancelledSale } from "../lib/salesMetrics";
 
 interface HistoryProps {
   sales: Sale[];
@@ -38,6 +39,7 @@ interface HistoryProps {
 type DatePreset = "all" | "today" | "yesterday" | "7days" | "this_month" | "last_month" | "custom";
 
 export function History({ sales, products, onRefreshData, currentUserRole }: HistoryProps) {
+  const canCancelSales = currentUserRole === "owner" || currentUserRole === "admin";
   const [expandedSaleId, setExpandedSaleId] = useState<string | null>(null);
   const [selectedReceiptSale, setSelectedReceiptSale] = useState<Sale | null>(null);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
@@ -166,16 +168,11 @@ export function History({ sales, products, onRefreshData, currentUserRole }: His
     return filteredSales.slice(start, start + pageSize);
   }, [filteredSales, currentPage, pageSize]);
 
-  // KPI Calculations
-  const totalFilteredRevenue = useMemo(
-    () => filteredSales.reduce((sum, s) => sum + s.totalAmount, 0),
-    [filteredSales]
-  );
-
-  const totalFilteredItemsCount = useMemo(
-    () => filteredSales.reduce((sum, s) => sum + s.items.reduce((iSum, i) => iSum + i.quantity, 0), 0),
-    [filteredSales]
-  );
+  // Cancelled/refunded receipts remain in history but do not count as active sales.
+  const salesMetrics = useMemo(() => calculateSalesMetrics(filteredSales), [filteredSales]);
+  const totalFilteredRevenue = salesMetrics.totalRevenue;
+  const totalFilteredItemsCount = salesMetrics.totalItemsSold;
+  const completedSalesCount = salesMetrics.totalTransactions;
 
   const toggleExpand = (id: string) => {
     setExpandedSaleId(expandedSaleId === id ? null : id);
@@ -217,13 +214,12 @@ export function History({ sales, products, onRefreshData, currentUserRole }: His
   };
 
   const handleCancelSale = async (sale: Sale) => {
-    const isAdminOrOwner = !currentUserRole || currentUserRole === "owner" || currentUserRole === "admin";
-    if (!isAdminOrOwner) {
+    if (!canCancelSales) {
       alert("Yetkilendirme Hatası: Satış iptali yalnızca 'owner' veya 'admin' yetkisine sahip kullanıcılar tarafından yapılabilir.");
       return;
     }
 
-    if (sale.status === "İptal Edildi") {
+    if (isCancelledSale(sale)) {
       alert("Bu satış fişi zaten iptal edilmiştir.");
       return;
     }
@@ -237,7 +233,8 @@ export function History({ sales, products, onRefreshData, currentUserRole }: His
     try {
       setCancellingSaleId(sale.id);
       setActionError(null);
-      const uid = auth.currentUser?.uid || "demo-user";
+      const uid = auth.currentUser?.uid;
+      if (!uid) throw new Error("Oturum açık değil. Lütfen yeniden giriş yapın.");
       await cancelSaleAtomic(uid, {
         saleId: sale.id,
         reason: reason.trim() || "Müşteri iadesi",
@@ -352,7 +349,7 @@ export function History({ sales, products, onRefreshData, currentUserRole }: His
               Toplam Fiş / İşlem
             </span>
             <span className="text-xl font-extrabold text-indigo-600 block mt-1">
-              {filteredSales.length} Adet
+              {completedSalesCount} Adet
             </span>
           </div>
           <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
@@ -485,7 +482,7 @@ export function History({ sales, products, onRefreshData, currentUserRole }: His
 
           {paginatedSales.map((sale) => {
             const isExpanded = expandedSaleId === sale.id;
-            const isCancelled = sale.status === "İptal Edildi";
+            const isCancelled = isCancelledSale(sale);
             const itemsCount = sale.items.reduce((sum, item) => sum + item.quantity, 0);
 
             return (
@@ -632,9 +629,16 @@ export function History({ sales, products, onRefreshData, currentUserRole }: His
                       {isCancelled ? (
                         <div className="flex items-center gap-2 text-rose-700 text-xs font-semibold">
                           <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                          <span>Bu satış iptal edilmiştir. Ürün stokları otomatik olarak iade edilmiştir. {sale.cancelReason ? `(Neden: ${sale.cancelReason})` : ""}</span>
+                          <span>
+                            {sale.stockRestored === true
+                              ? "Bu satış iptal/iade edildi ve stoklar geri yüklendi."
+                              : sale.manualReconciliationRequired
+                              ? "Bu eski satışın stok düşümü doğrulanamadı; otomatik iade yapılmadı. Stokları manuel kontrol edin."
+                              : "Bu satış iptal/iade kaydı taşıyor; stok iadesi durumu ayrıca doğrulanmalıdır."}
+                            {sale.cancelReason ? ` (Neden: ${sale.cancelReason})` : ""}
+                          </span>
                         </div>
-                      ) : (
+                      ) : canCancelSales ? (
                         <>
                           <span className="text-xs text-slate-400 font-medium">
                             Hatalı fiş veya müşteri iadesi durumunda satışı iptal edebilirsiniz.
@@ -650,6 +654,10 @@ export function History({ sales, products, onRefreshData, currentUserRole }: His
                             <span>{cancellingSaleId === sale.id ? "İptal Ediliyor..." : "Satışı İptal / İade Et"}</span>
                           </button>
                         </>
+                      ) : (
+                        <span className="text-xs text-slate-400 font-medium">
+                          Satış iptali yalnızca firma sahibi veya yönetici yetkisiyle yapılabilir.
+                        </span>
                       )}
                     </div>
                   </div>
