@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { QRScanner } from "./QRScanner";
 import { ReceiptPrintModal } from "./ReceiptPrintModal";
-import { shouldShowRolls } from "../lib/sectorConfig";
+import { getRollStockBalance, shouldShowRolls } from "../lib/sectorConfig";
 
 interface QuickSaleProps {
   products: Product[];
@@ -127,7 +127,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
     setSelectedProduct(prod);
     setSelectedRollId("");
     setSelectedBoxId("");
-    setCutLength("");
+    setCutLength(shouldShowRolls(prod) ? "1" : "");
     setQuantity(1);
     setError(null);
   };
@@ -143,33 +143,55 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
 
     const finalRollId = isFabric && selectedRollId ? selectedRollId : undefined;
     const finalBoxId = hasBoxes && selectedBoxId ? selectedBoxId : undefined;
-    const finalCutLength = isFabric && cutLength ? parseFloat(cutLength) : undefined;
+    const finalCutLength = isFabric ? Number(cutLength || qty) : undefined;
+    const requiredQuantity = finalCutLength !== undefined ? finalCutLength : qty;
 
-    // Validate roll stock
-    if (finalRollId) {
-      const selectedRoll = product.rolls?.find(r => r.id === finalRollId);
-      if (selectedRoll) {
-        const requiredAmt = finalCutLength || qty;
-        if (selectedRoll.length < requiredAmt) {
-          setError(`Seçilen topta yeterli kumaş yok! Kalan: ${selectedRoll.length} m`);
-          return;
-        }
-      }
-    } 
-    // Validate box stock
-    else if (finalBoxId) {
-      const selectedBox = product.boxes?.find(b => b.id === finalBoxId);
-      if (selectedBox) {
-        if (selectedBox.quantity < qty) {
-          setError(`Seçilen kolide yeterli adet yok! Kalan: ${selectedBox.quantity} adet`);
-          return;
-        }
-      }
-    } else {
-      if (product.stock < qty) {
-        setError(`Stok yetersiz! Mevcut stok: ${product.stock}`);
+    if (isFabric && (!Number.isFinite(requiredQuantity) || requiredQuantity <= 0)) {
+      setError("Lütfen geçerli bir kumaş kesim miktarı girin.");
+      return;
+    }
+
+    if (isFabric && product.rolls && product.rolls.length > 0) {
+      const balance = getRollStockBalance(product);
+      if (!balance.isBalanced) {
+        setError(
+          `Kumaş stok kontrolü gerekli: ürün stoğu ${balance.productStock} m, top kayıtları toplamı ${balance.trackedRollLength} m. Satıştan önce Stok > Topları Yönet bölümünden kayıtları kontrol edin.`
+        );
         return;
       }
+    }
+
+    if (isFabric && finalRollId) {
+      const selectedRoll = product.rolls?.find(r => r.id === finalRollId);
+      if (!selectedRoll || selectedRoll.status !== "available") {
+        setError("Seçilen kumaş topu satışa uygun değil. Lütfen başka bir top seçin.");
+        return;
+      }
+      if (selectedRoll.length < requiredQuantity) {
+        setError(`Seçilen topta yeterli kumaş yok! Kalan: ${selectedRoll.length} m`);
+        return;
+      }
+    } else if (isFabric && product.rolls && product.rolls.length > 0) {
+      const availableRollLength = product.rolls
+        .filter(r => r.status === "available")
+        .reduce((sum, r) => sum + Math.max(0, Number(r.length) || 0), 0);
+      if (availableRollLength < requiredQuantity) {
+        setError(`Satışa uygun toplarda yeterli kumaş yok! Kullanılabilir: ${availableRollLength} m`);
+        return;
+      }
+    } else if (finalBoxId) {
+      const selectedBox = product.boxes?.find(b => b.id === finalBoxId);
+      if (!selectedBox || selectedBox.status !== "available") {
+        setError("Seçilen koli satışa uygun değil. Lütfen başka bir koli seçin.");
+        return;
+      }
+      if (selectedBox.quantity < qty) {
+        setError(`Seçilen kolide yeterli adet yok! Kalan: ${selectedBox.quantity} adet`);
+        return;
+      }
+    } else if (!isFabric && product.stock < qty) {
+      setError(`Stok yetersiz! Mevcut stok: ${product.stock}`);
+      return;
     }
 
     const boxObj = finalBoxId ? product.boxes?.find(b => b.id === finalBoxId) : undefined;
@@ -185,12 +207,20 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
       const currentQtyInCart = cart[existingIndex].quantity;
       const updatedCart = [...cart];
       
-      if (finalCutLength) {
+      if (finalCutLength !== undefined) {
         const newCutLen = roundQty((updatedCart[existingIndex].cutLength || 0) + finalCutLength);
         if (finalRollId) {
           const selectedRoll = product.rolls?.find(r => r.id === finalRollId);
-          if (selectedRoll && selectedRoll.length < newCutLen) {
+          if (!selectedRoll || selectedRoll.status !== "available" || selectedRoll.length < newCutLen) {
             setError(`Seçilen topta yeterli kumaş yok! Toplam istenen: ${newCutLen} m`);
+            return;
+          }
+        } else if (product.rolls && product.rolls.length > 0) {
+          const availableRollLength = product.rolls
+            .filter(r => r.status === "available")
+            .reduce((sum, r) => sum + Math.max(0, Number(r.length) || 0), 0);
+          if (availableRollLength < newCutLen) {
+            setError(`Satışa uygun toplarda yeterli kumaş yok! Kullanılabilir: ${availableRollLength} m`);
             return;
           }
         }
@@ -219,7 +249,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
           cutLength: finalCutLength !== undefined ? roundQty(finalCutLength) : undefined,
           selectedBoxId: finalBoxId,
           selectedBoxNumber: boxObj?.boxNumber,
-          unit: product.unit || (isFabric ? "metre" : "adet")
+          unit: isFabric ? "Metre" : (product.unit || "Adet")
         }
       ]);
     }
@@ -542,7 +572,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                 <div className="text-right">
                   <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">Mevcut Stok</span>
                   <span className="text-lg font-black text-slate-800 block">
-                    {selectedProduct.stock} {selectedProduct.unit || "Adet"}
+                    {selectedProduct.stock} {shouldShowRolls(selectedProduct) ? "Metre" : (selectedProduct.unit || "Adet")}
                   </span>
                 </div>
               </div>
@@ -563,13 +593,8 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                           const rollId = e.target.value;
                           setSelectedRollId(rollId);
                           const matchedRoll = selectedProduct.rolls?.find(r => r.id === rollId);
-                          if (matchedRoll) {
-                            setCutLength(String(matchedRoll.length));
-                            setQuantity(Math.ceil(matchedRoll.length));
-                          } else {
-                            setCutLength("");
-                            setQuantity(1);
-                          }
+                          setCutLength("1");
+                          setQuantity(1);
                         }}
                         className="w-full p-2 border border-slate-200 rounded-lg bg-white focus:outline-none text-xs font-medium"
                       >
@@ -743,13 +768,24 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                 </div>
               )}
 
+              {selectedProduct && shouldShowRolls(selectedProduct) && selectedProduct.rolls?.length ? (() => {
+                const balance = getRollStockBalance(selectedProduct);
+                return !balance.isBalanced ? (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
+                    <strong>Stok ve top kayıtları uyuşmuyor.</strong>
+                    <p>Ürün stoğu: {balance.productStock} m · Topların toplamı: {balance.trackedRollLength} m</p>
+                    <p>Satış, stok kayıtları kontrol edilene kadar engellendi. Stok bölümünde “Topları Yönet” ile farkı inceleyin.</p>
+                  </div>
+                ) : null;
+              })() : null}
               <button
                 type="button"
                 onClick={() => addToCart(selectedProduct, quantity)}
-                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-lg transition-all shadow-sm cursor-pointer flex items-center justify-center gap-2"
+                disabled={Boolean(selectedProduct && shouldShowRolls(selectedProduct) && selectedProduct.rolls?.length && !getRollStockBalance(selectedProduct).isBalanced)}
+                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold text-sm rounded-lg transition-all shadow-sm cursor-pointer flex items-center justify-center gap-2"
               >
                 <ShoppingCart className="w-4 h-4" />
-                <span>Sepete Ekle — {formatCurrency(selectedProduct.price * (cutLength ? parseFloat(cutLength) : quantity))}</span>
+                <span>Sepete Ekle — {formatCurrency(selectedProduct.price * (shouldShowRolls(selectedProduct) ? Number(cutLength || 1) : quantity))}</span>
               </button>
             </div>
           )}
@@ -814,7 +850,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                           {formatCurrency(p.price)}
                         </span>
                         <span className={`text-[10px] font-bold block ${p.stock <= p.minStock ? "text-rose-500" : "text-emerald-600"}`}>
-                          {p.stock} {p.unit || (isFabric ? "m" : "ad")}
+                          {p.stock} {isFabric ? "m" : (p.unit || "ad")}
                         </span>
                       </div>
 
