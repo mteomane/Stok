@@ -19,7 +19,8 @@
     "test:security": "tsx scripts/test_tenant_isolation_security.ts",
     "test:package_units": "firebase emulators:exec --only firestore --project demo-package-units-test \"npx tsx scripts/test_package_units_regression.ts\"",
     "test:emulator": "firebase emulators:exec --only firestore --project demo-stok-satis-test \"npx tsx scripts/test_firestore_rules.ts && npx tsx scripts/test_firestore_integration.ts && npx tsx scripts/test_production_repositories.ts\"",
-    "test:sales_reporting": "tsx scripts/test_sales_reporting.ts"
+    "test:sales_reporting": "tsx scripts/test_sales_reporting.ts",
+    "test:sector_rolls": "tsx scripts/test_sector_roll_visibility.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^8.4.0",
