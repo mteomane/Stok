@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import { Product, Sale } from "../types";
+import { isCancelledSale } from "../lib/salesMetrics";
 import { 
   TrendingUp, 
   Box, 
@@ -37,9 +38,12 @@ export function Dashboard({
     outOfStockCount,
     criticalDeficit,
     stockHealthRate,
-    recentSales
+    recentSales,
+    completedSalesCount
   } = useMemo(() => {
-    const totalSalesCiro = sales.reduce((sum, s) => sum + s.totalAmount, 0);
+    const completedSales = sales.filter((sale) => !isCancelledSale(sale));
+    const totalSalesCiro = completedSales.reduce((sum, sale) => sum + sale.totalAmount, 0);
+    const completedSalesCount = completedSales.length;
     const totalProductsCount = products.length;
     const totalStockQuantity = products.reduce((sum, p) => sum + p.stock, 0);
     const lowStockProducts = products.filter((p) => p.stock <= p.minStock);
@@ -49,7 +53,7 @@ export function Dashboard({
       ? Math.round(((totalProductsCount - lowStockProducts.length) / totalProductsCount) * 100) 
       : 100;
 
-    const recentSales = [...sales]
+    const recentSales = [...completedSales]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 5);
 
@@ -61,7 +65,8 @@ export function Dashboard({
       outOfStockCount,
       criticalDeficit,
       stockHealthRate,
-      recentSales
+      recentSales,
+      completedSalesCount
     };
   }, [products, sales]);
 
@@ -102,7 +107,7 @@ export function Dashboard({
             {formatCurrency(totalSalesCiro)}
           </span>
           <span className="text-[11px] text-emerald-600 font-medium mt-1.5 flex items-center gap-1">
-            {sales.length} başarılı satış kaydı
+            {completedSalesCount} tamamlanan satış kaydı
           </span>
         </div>
 
