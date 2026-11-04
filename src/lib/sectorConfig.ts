@@ -150,6 +150,37 @@ export function shouldShowRolls(product: Product | null | undefined, activeSecto
   return hasFabricMetadata;
 }
 
+export interface RollStockBalance {
+  hasRollRecords: boolean;
+  trackedRollLength: number;
+  productStock: number;
+  difference: number;
+  isBalanced: boolean;
+}
+
+/**
+ * Compares aggregate stock with remaining length on every recorded roll,
+ * including reserved rolls. It reports discrepancies without changing stock.
+ */
+export function getRollStockBalance(
+  product: Pick<Product, "stock" | "rolls">
+): RollStockBalance {
+  const rolls = product.rolls || [];
+  const trackedRollLength = Number(
+    rolls.reduce((sum, roll) => sum + Math.max(0, Number(roll.length) || 0), 0).toFixed(3)
+  );
+  const productStock = Number(Math.max(0, Number(product.stock) || 0).toFixed(3));
+  const difference = Number((trackedRollLength - productStock).toFixed(3));
+
+  return {
+    hasRollRecords: rolls.length > 0,
+    trackedRollLength,
+    productStock,
+    difference,
+    isBalanced: rolls.length === 0 || Math.abs(difference) < 0.001
+  };
+}
+
 /**
  * Normalizes and synchronizes metadata and attributes bidirectionally.
  * Guarantees zero data loss across legacy `attributes` and new `metadata`.
