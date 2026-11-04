@@ -1,0 +1,80 @@
+name: Stok-Pro CI
+
+on:
+  push:
+    branches:
+      - main
+      - "fix/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Lint, build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java for Firestore Emulator
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install project dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Install Firebase CLI for emulator tests
+        run: npm install --global firebase-tools@15.34.1
+
+      - name: TypeScript lint
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+
+      - name: Firebase configuration tests
+        run: npm run test:config
+
+      - name: Tenant security tests
+        run: npm run test:security
+
+      - name: Pilot readiness tests
+        run: npm run test:pilot
+
+      - name: Backup security tests
+        run: npm run test:backup
+
+      - name: Cloud backup unit tests (no live deployment)
+        run: npm run test:cloud_backup
+
+      - name: Quick product and barcode tests
+        run: npm run test:quick_product
+
+      - name: Sales reporting regression tests
+        run: npm run test:sales_reporting
+
+      - name: Firestore security rules emulator tests
+        run: npm run test:rules
+
+      - name: Firestore integration emulator tests
+        run: npm run test:integration
+
+      - name: Repository emulator tests
+        run: npm run test:repositories
+
+      - name: Package unit regression emulator tests
+        run: npm run test:package_units
