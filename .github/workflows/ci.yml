@@ -67,6 +67,9 @@ jobs:
       - name: Sales reporting regression tests
         run: npm run test:sales_reporting
 
+      - name: Sector-specific roll visibility regression tests
+        run: npm run test:sector_rolls
+
       - name: Firestore security rules emulator tests
         run: npm run test:rules
 
