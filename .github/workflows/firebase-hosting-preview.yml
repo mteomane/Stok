@@ -1,9 +1,6 @@
 name: Firebase Hosting Preview
 
 on:
-  push:
-    branches:
-      - fix/mobile-nav-sales-reports-ci
   pull_request:
     types:
       - opened
@@ -11,16 +8,11 @@ on:
       - reopened
     branches:
       - main
-  workflow_dispatch:
 
 permissions:
   checks: write
   contents: read
   pull-requests: write
-
-concurrency:
-  group: firebase-preview-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build_and_preview:
@@ -56,29 +48,11 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Deploy pull request preview
-        id: firebase_pr_preview
-        if: github.event_name == 'pull_request' && steps.firebase_credentials.outputs.configured == 'true'
+      - name: Deploy to Firebase Hosting preview channel
+        if: steps.firebase_credentials.outputs.configured == 'true'
         uses: FirebaseExtended/action-hosting-deploy@v0.11.0
         with:
           repoToken: "${{ secrets.GITHUB_TOKEN }}"
           firebaseServiceAccount: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_STOK_PRO_911B4 }}"
           projectId: stok-pro-911b4
           expires: 14d
-
-      - name: Deploy development branch preview
-        id: firebase_branch_preview
-        if: github.event_name != 'pull_request' && steps.firebase_credentials.outputs.configured == 'true'
-        uses: FirebaseExtended/action-hosting-deploy@v0.11.0
-        with:
-          firebaseServiceAccount: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_STOK_PRO_911B4 }}"
-          projectId: stok-pro-911b4
-          channelId: stokpro-review
-          expires: 14d
-
-      - name: Add preview link to the development pull request
-        if: github.event_name != 'pull_request' && steps.firebase_credentials.outputs.configured == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PREVIEW_URL: ${{ steps.firebase_branch_preview.outputs.url }}
-        run: gh pr comment 1 --body "Stok-Pro test preview: ${PREVIEW_URL} (14 gün geçerlidir). Bu adres gerçek Firebase projesiyle konuşur; yalnızca test işletmesi kullanın."
