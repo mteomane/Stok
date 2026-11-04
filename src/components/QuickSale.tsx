@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { QRScanner } from "./QRScanner";
 import { ReceiptPrintModal } from "./ReceiptPrintModal";
+import { shouldShowRolls } from "../lib/sectorConfig";
 
 interface QuickSaleProps {
   products: Product[];
@@ -136,10 +137,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
     setSuccess(false);
     setCurrentIdempotencyKey(null);
 
-    const isFabric = 
-      product.category?.toLowerCase() === "kumaş" || 
-      product.category?.toLowerCase() === "kumas" || 
-      (product.rolls && product.rolls.length > 0);
+    const isFabric = shouldShowRolls(product);
 
     const hasBoxes = product.boxes && product.boxes.length > 0;
 
@@ -550,7 +548,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
               </div>
 
               {/* 1. KUMAŞ RULO SEÇİMİ */}
-              {((selectedProduct.category?.toLowerCase() === "kumaş" || selectedProduct.category?.toLowerCase() === "kumas") || (selectedProduct.rolls && selectedProduct.rolls.length > 0)) && (
+              {shouldShowRolls(selectedProduct) && (
                 <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3 text-xs">
                   <span className="font-bold text-slate-700 flex items-center gap-1.5 border-b border-slate-200 pb-1.5">
                     <Scissors className="w-4 h-4 text-indigo-600" />
@@ -688,7 +686,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
               )}
 
               {/* 3. STANDART MİKTAR SEÇİMİ (Kumaş veya Koli değilse) */}
-              {!(selectedProduct.category?.toLowerCase() === "kumaş" || selectedProduct.category?.toLowerCase() === "kumas") &&
+              {!shouldShowRolls(selectedProduct) &&
                !(selectedProduct.boxes && selectedProduct.boxes.length > 0) && (
                 <div>
                   <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">
@@ -765,7 +763,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
               </div>
             ) : (
               displayedProducts.map((p) => {
-                const isFabric = p.category?.toLowerCase() === "kumaş" || p.category?.toLowerCase() === "kumas" || (p.rolls && p.rolls.length > 0);
+                const isFabric = shouldShowRolls(p);
                 const hasBoxes = p.boxes && p.boxes.length > 0;
                 const isConfigurable = isFabric || hasBoxes;
 
