@@ -352,11 +352,11 @@ export class FirebaseSalesRepository implements SalesRepository {
     }
     const snapshot = await getDocs(query(
       collection(this.db, "stock_reservations"),
-      where("tenantId", "==", context.tenantId)
+      where("tenantId", "==", context.tenantId),
+      where("status", "==", "active"),
+      where("expiresAt", "<=", new Date(now).toISOString())
     ));
-    const expiredIds = snapshot.docs
-      .filter(d => d.data().status === "active" && Date.parse(d.data().expiresAt || "") <= now)
-      .map(d => d.id);
+    const expiredIds = snapshot.docs.map(d => d.id);
     for (const id of expiredIds) {
       await this.releaseReservationAsExpired(validUid, id);
     }
