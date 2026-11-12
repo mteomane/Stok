@@ -285,7 +285,7 @@ export function Dashboard({
               {lowStockProducts.slice(0, 6).map((p) => {
                 const deficit = Math.max(0, p.minStock - getAvailableStock(p));
                 const percent = p.minStock > 0 ? Math.min(100, Math.round((getAvailableStock(p) / p.minStock) * 100)) : 0;
-                const isZero = p.stock <= 0;
+                const isZero = getAvailableStock(p) <= 0;
 
                 return (
                   <div
