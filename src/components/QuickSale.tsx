@@ -419,6 +419,13 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
     }
   };
 
+  const selectedProductCartHold = selectedProduct
+    ? cart.filter(item => item.product.id === selectedProduct.id).reduce((sum, item) => sum + Number(item.quantity || 0), 0)
+    : 0;
+  const selectedProductAvailable = selectedProduct
+    ? roundQty(getAvailableStock(selectedProduct) + selectedProductCartHold)
+    : 0;
+
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(val);
   };
@@ -590,7 +597,7 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
                         type="number"
                         min="0.1"
                         step="0.1"
-                        max={selectedProduct.stock}
+                        max={selectedProductAvailable}
                         value={cutLength}
                         onChange={(e) => {
                           const val = e.target.value;
@@ -600,7 +607,7 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
                             setQuantity(Math.ceil(parsedVal));
                           }
                         }}
-                        placeholder={`Toplam stok: ${selectedProduct.stock} m`}
+                        placeholder={`Satılabilir: ${selectedProductAvailable} m`}
                         className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
                       />
                     </div>
@@ -652,7 +659,7 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
                         <input
                           type="number"
                           min="1"
-                          max={selectedBoxId ? (selectedProduct.boxes.find(b => b.id === selectedBoxId)?.quantity || selectedProduct.stock) : selectedProduct.stock}
+                          max={selectedBoxId ? (getAvailableBoxQuantity(selectedProduct.boxes.find(b => b.id === selectedBoxId) || { quantity: 0 }) + selectedProductCartHold) : selectedProductAvailable}
                           value={quantity}
                           onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
                           className="flex-1 text-xs font-bold text-center bg-transparent outline-none"
@@ -723,7 +730,7 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
                         type="button"
                         onClick={() => {
                           const step = (selectedProduct.unit?.toLowerCase() === "kg" || selectedProduct.unit?.toLowerCase() === "litre") ? 0.5 : 1;
-                          setQuantity(Math.min(selectedProduct.stock, roundQty(quantity + step)));
+                          setQuantity(Math.min(selectedProductAvailable, roundQty(quantity + step)));
                         }}
                         className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 active:scale-90 transition-all cursor-pointer"
                       >
