@@ -478,15 +478,6 @@ export async function runProductionRepositoryTests() {
       ]
     });
     const ownerReservationId = "cart_usr_repo_owner_a_res_001";
-    const reservationDebugContext = await userRepoA.getOrCreateContext("usr_repo_owner_a");
-    const reservationDebugProduct = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
-    console.log("[RESERVATION DEBUG]", JSON.stringify({
-      authUid: "usr_repo_owner_a",
-      contextTenantId: reservationDebugContext.tenantId,
-      productTenantId: reservationDebugProduct?.tenantId,
-      productUserId: (reservationDebugProduct as any)?.userId,
-      reservationId: ownerReservationId
-    }));
     setTestAuthenticatedUid("usr_repo_owner_a");
     const ownerReservedProduct = await salesRepoA.reserveStock("usr_repo_owner_a", reservationProduct.id, 10, ownerReservationId);
     recordResult(
