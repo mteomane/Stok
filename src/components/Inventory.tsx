@@ -42,7 +42,7 @@ import { UniversalImportModal } from "./UniversalImportModal";
 import { QuickProductModal } from "./QuickProductModal";
 import { QuickReplenishModal } from "./QuickReplenishModal";
 import { QRScanner } from "./QRScanner";
-import { getSectorProfile, shouldShowRolls, SECTOR_PROFILES } from "../lib/sectorConfig";
+import { getAvailableStock, getSectorProfile, shouldShowRolls, SECTOR_PROFILES } from "../lib/sectorConfig";
 import { exportService } from "../lib/export/ExportService";
 import { triggerFileDownload } from "../lib/export/fileDownload";
 
@@ -427,7 +427,7 @@ export function Inventory({
   const categories = useMemo(() => ["Tümü", ...Array.from(new Set(products.map((p) => p.category || "Genel")))], [products]);
 
   // Low stock count (active products only)
-  const lowStockCount = useMemo(() => products.filter((p) => p.isActive !== false && p.stock <= p.minStock).length, [products]);
+  const lowStockCount = useMemo(() => products.filter((p) => p.isActive !== false && getAvailableStock(p) <= p.minStock).length, [products]);
   // Archived count
   const archivedCount = useMemo(() => products.filter((p) => p.isActive === false).length, [products]);
 
@@ -449,7 +449,7 @@ export function Inventory({
         (p.brand && p.brand.toLowerCase().includes(q)) ||
         (p.category && p.category.toLowerCase().includes(q));
       const matchesCategory = selectedCategory === "Tümü" || p.category === selectedCategory;
-      const matchesLowStock = !onlyLowStock || p.stock <= p.minStock;
+      const matchesLowStock = !onlyLowStock || getAvailableStock(p) <= p.minStock;
       return matchesSearch && matchesCategory && matchesLowStock;
     });
   }, [products, showArchived, debouncedSearch, selectedCategory, onlyLowStock]);
@@ -563,7 +563,12 @@ export function Inventory({
   };
 
   const adjustStock = async (productId: string, currentStock: number, adjustment: number) => {
+    const product = products.find((p) => p.id === productId);
     const newStock = roundQty(Math.max(0, currentStock + adjustment));
+    if (newStock < Number(product?.reservedStock || 0)) {
+      alert("Bu ürünün bir kısmı satış sepetlerinde ayrılmış. Ayrılmış miktarın altına stok düşürülemez.");
+      return;
+    }
     await onUpdateProduct(productId, { stock: newStock });
   };
 
@@ -847,7 +852,7 @@ export function Inventory({
 
           {/* Product Rows */}
           {paginatedProducts.map((p) => {
-            const isLowStock = p.stock <= p.minStock;
+            const isLowStock = getAvailableStock(p) <= p.minStock;
             const isHighlighted = p.id === highlightProductId;
             const isExpanded = p.id === expandedProductId;
 
@@ -910,7 +915,7 @@ export function Inventory({
                   <div className="col-span-2 flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                     <div className="text-right">
                       <div className={`text-sm font-black ${isLowStock ? "text-rose-600" : "text-emerald-700"}`}>
-                        {p.stock}{" "}
+                        {getAvailableStock(p)}{" "}
                         <span className="text-xs font-normal text-slate-500">
                           {p.unit || (p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas") ? "m" : p.packageUnitName || "ad")}
                         </span>
@@ -1157,9 +1162,9 @@ export function Inventory({
                       <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 text-xs space-y-2">
                         <div className="flex justify-between items-center">
                           <div>
-                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide block">Rulo / Top Takibi</span>
+                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide block">Kumaş Stoku</span>
                             <span className="font-bold text-indigo-700">
-                              {p.rolls?.length || 0} Adet Top ({p.stock} m)
+                              {getAvailableStock(p)} m satılabilir{Number(p.reservedStock || 0) > 0 ? " · " + p.reservedStock + " m sepette ayrılmış" : ""}
                             </span>
                           </div>
                           <button
@@ -1225,7 +1230,7 @@ export function Inventory({
                     <div className="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
                       {/* Left: Quick Adjustments */}
                       <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-bold text-slate-500">Stok:</span>
+                        <span className="text-[11px] font-bold text-slate-500">Satılabilir stok:</span>
                         <div className="flex items-center bg-white border border-slate-200 rounded-lg p-0.5 shadow-xs">
                           <button
                             type="button"
