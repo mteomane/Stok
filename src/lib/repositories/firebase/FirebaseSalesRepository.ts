@@ -871,6 +871,18 @@ export class FirebaseSalesRepository implements SalesRepository {
           productDocsMap.set(pId, { ...data, id: pSnap.id });
         }
 
+        // Load every cart reservation before the transaction begins writing.
+        const reservationDocsMap = new Map<string, { ref: any; data: any }>();
+        const reservationIds = Array.from(new Set(items.map(i => i.reservationId).filter((id): id is string => Boolean(id))));
+        for (const reservationId of reservationIds) {
+          const reservationRef = doc(this.db, "stock_reservations", reservationId);
+          const reservationSnap = await transaction.get(reservationRef);
+          if (!reservationSnap.exists()) {
+            throw new Error("Sepet stok ayırması bulunamadı. Ürünü yeniden sepete ekleyin.");
+          }
+          reservationDocsMap.set(reservationId, { ref: reservationRef, data: reservationSnap.data() });
+        }
+
         let customerData: any = null;
         let customerRef: any = null;
         if (customerId) {
@@ -920,12 +932,61 @@ export class FirebaseSalesRepository implements SalesRepository {
             }
           }
 
-          if (item.selectedRollId && prod.rolls) {
+          const reservationEntry = item.reservationId ? reservationDocsMap.get(item.reservationId) : undefined;
+          if (item.reservationId) {
+            const reservation = reservationEntry?.data;
+            if (!reservation || reservation.status !== "active" || reservation.userId !== uid ||
+                reservation.tenantId !== context.tenantId || reservation.productId !== prod.id ||
+                Date.parse(reservation.expiresAt || "") <= Date.now()) {
+              throw new Error("Sepet stok ayırmasının süresi dolmuş. Ürünü yeniden sepete ekleyin.");
+            }
+            if (roundQty(Number(reservation.quantity)) !== qtyToDeduct) {
+              throw new Error("Sepette ayrılan miktar ile satış miktarı eşleşmiyor. Lütfen miktarı yeniden ayırın.");
+            }
+
+            prod.reservedStock = roundQty(Math.max(0, Number(prod.reservedStock || 0) - qtyToDeduct));
+            for (const allocation of reservation.rollAllocations || []) {
+              const roll = prod.rolls?.find((r: FabricRoll) => r.id === allocation.rollId);
+              if (!roll) throw new Error("Rezervasyondaki kumaş topu bulunamadı.");
+              const amount = roundQty(Number(allocation.length || 0));
+              if (Number(roll.reservedLength || 0) < amount || Number(roll.length || 0) < amount) {
+                throw new Error("Rezerve edilen kumaş topu miktarı artık uygun değil.");
+              }
+              roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - amount));
+              roll.length = roundQty(Math.max(0, Number(roll.length || 0) - amount));
+              roll.soldLength = roundQty(Number(roll.soldLength || 0) + amount);
+              roll.status = roll.length <= 0 ? "sold" : "available";
+              rollAllocations.push({ rollId: roll.id, length: amount });
+            }
+            for (const allocation of reservation.boxAllocations || []) {
+              const box = prod.boxes?.find((b: any) => b.id === allocation.boxId);
+              if (!box) throw new Error("Rezervasyondaki koli bulunamadı.");
+              const amount = roundQty(Number(allocation.quantity || 0));
+              if (Number(box.reservedQuantity || 0) < amount || Number(box.quantity || 0) < amount) {
+                throw new Error("Rezerve edilen koli miktarı artık uygun değil.");
+              }
+              box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - amount));
+              box.quantity = roundQty(Math.max(0, Number(box.quantity || 0) - amount));
+              box.soldQuantity = roundQty(Number(box.soldQuantity || 0) + amount);
+              box.status = box.quantity <= 0 ? "depleted" : "available";
+              boxAllocations.push({ boxId: box.id, quantity: amount });
+            }
+
+            if (rollAllocations.length > 0 && prod.rolls) {
+              prod.stock = roundQty(prod.rolls.reduce((sum: number, roll: FabricRoll) => sum + (Number(roll.length) || 0), 0));
+            } else if (boxAllocations.length > 0 && prod.boxes) {
+              prod.stock = roundQty(prod.boxes.reduce((sum: number, box: any) => sum + (Number(box.quantity) || 0), 0));
+            } else {
+              prod.stock = roundQty(Math.max(0, Number(prod.stock || 0) - qtyToDeduct));
+            }
+            reservationEntry!.data.status = "committed";
+            reservationEntry!.data.committedAt = new Date().toISOString();
+          } else if (item.selectedRollId && prod.rolls) {
             const roll = prod.rolls.find((r: FabricRoll) => r.id === item.selectedRollId);
             if (!roll) throw new Error(`Kumaş topu bulunamadı: ID ${item.selectedRollId}`);
             if (roll.status !== "available") throw new Error(`Seçilen kumaş topu satışa uygun değil: ${roll.rollNumber}`);
             const currentLen = Number(roll.length);
-            if (currentLen < qtyToDeduct) {
+            if (currentLen - Number(roll.reservedLength || 0) < qtyToDeduct) {
               throw new Error(`Seçilen kumaş topunda (${roll.rollNumber}) yeterli kumaş kalmadı! Kalan: ${currentLen}m (Talep edilen: ${qtyToDeduct}m)`);
             }
             const initLen = roll.initialLength !== undefined ? Number(roll.initialLength) : currentLen;
@@ -955,7 +1016,7 @@ export class FirebaseSalesRepository implements SalesRepository {
           } else if (isRollTracked && prod.rolls && prod.rolls.length > 0) {
             const availableRollLength = prod.rolls
               .filter((r: FabricRoll) => r.status === "available")
-              .reduce((sum: number, r: FabricRoll) => sum + Math.max(0, Number(r.length) || 0), 0);
+              .reduce((sum: number, r: FabricRoll) => sum + Math.max(0, Number(r.length || 0) - Number(r.reservedLength || 0)), 0);
             if (availableRollLength < qtyToDeduct) {
               throw new Error(`Satışa uygun toplarda yeterli kumaş yok! Kullanılabilir: ${availableRollLength} m`);
             }
@@ -963,8 +1024,9 @@ export class FirebaseSalesRepository implements SalesRepository {
             let remainingDeduct = qtyToDeduct;
             for (const roll of prod.rolls as FabricRoll[]) {
               const currentLen = Number(roll.length) || 0;
-              if (roll.status === "available" && currentLen > 0 && remainingDeduct > 0) {
-                const dec = roundQty(Math.min(currentLen, remainingDeduct));
+              const freeLen = Math.max(0, currentLen - Number(roll.reservedLength || 0));
+              if (roll.status === "available" && freeLen > 0 && remainingDeduct > 0) {
+                const dec = roundQty(Math.min(freeLen, remainingDeduct));
                 remainingDeduct = roundQty(remainingDeduct - dec);
                 const initLen = roll.initialLength !== undefined ? Number(roll.initialLength) : currentLen;
                 roll.initialLength = initLen;
@@ -982,7 +1044,7 @@ export class FirebaseSalesRepository implements SalesRepository {
           } else if (prod.boxes && prod.boxes.length > 0) {
             const availableBoxQuantity = prod.boxes
               .filter((b: any) => b.status === "available")
-              .reduce((sum: number, b: any) => sum + Math.max(0, Number(b.quantity) || 0), 0);
+              .reduce((sum: number, b: any) => sum + Math.max(0, Number(b.quantity || 0) - Number(b.reservedQuantity || 0)), 0);
             if (availableBoxQuantity < qtyToDeduct) {
               throw new Error(`Satışa uygun kolilerde yeterli adet yok! Kullanılabilir: ${availableBoxQuantity}`);
             }
@@ -990,8 +1052,9 @@ export class FirebaseSalesRepository implements SalesRepository {
             let remainingDeduct = qtyToDeduct;
             for (const box of prod.boxes) {
               const currentQty = Number(box.quantity) || 0;
-              if (box.status === "available" && currentQty > 0 && remainingDeduct > 0) {
-                const dec = roundQty(Math.min(currentQty, remainingDeduct));
+              const freeQty = Math.max(0, currentQty - Number(box.reservedQuantity || 0));
+              if (box.status === "available" && freeQty > 0 && remainingDeduct > 0) {
+                const dec = roundQty(Math.min(freeQty, remainingDeduct));
                 remainingDeduct = roundQty(remainingDeduct - dec);
                 const initQty = box.initialQuantity !== undefined ? Number(box.initialQuantity) : currentQty;
                 box.initialQuantity = initQty;
@@ -1007,8 +1070,8 @@ export class FirebaseSalesRepository implements SalesRepository {
             }
             prod.stock = roundQty(prod.boxes.reduce((sum: number, b: any) => sum + (Number(b.quantity) || 0), 0));
           } else {
-            if (prod.stock < qtyToDeduct) {
-              throw new Error(`Stok Yetersiz: "${prod.name}" için mevcut stok: ${prod.stock}, istenen miktar: ${qtyToDeduct}`);
+            if (prod.stock - Number(prod.reservedStock || 0) < qtyToDeduct) {
+              throw new Error(`Stok Yetersiz: "${prod.name}" için kullanılabilir stok: ${roundQty(prod.stock - Number(prod.reservedStock || 0))}, istenen miktar: ${qtyToDeduct}`);
             }
             prod.stock = roundQty(Math.max(0, prod.stock - qtyToDeduct));
           }
@@ -1081,9 +1144,16 @@ export class FirebaseSalesRepository implements SalesRepository {
           const pDocRef = doc(this.db, "products", pId);
           transaction.update(pDocRef, {
             stock: updatedProd.stock,
+            reservedStock: Number(updatedProd.reservedStock || 0),
             ...(updatedProd.rolls ? { rolls: updatedProd.rolls } : {}),
             ...(updatedProd.boxes ? { boxes: updatedProd.boxes } : {})
           });
+        }
+
+        for (const [reservationId, entry] of reservationDocsMap.entries()) {
+          if (entry.data.status === "committed") {
+            transaction.update(entry.ref, { status: "committed", committedAt: entry.data.committedAt || newSaleDocData.timestamp });
+          }
         }
 
         transaction.set(saleRef, newSaleDocData);
