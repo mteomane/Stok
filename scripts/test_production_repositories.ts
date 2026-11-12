@@ -485,6 +485,27 @@ export async function runProductionRepositoryTests() {
       "İlk satıcı 10 metreyi sepete eklediğinde diğer satıcılara açık stok 61m yerine 51m görünür"
     );
 
+    let manualStockReductionBlocked = false;
+    try {
+      await productRepoA.update(reservationProduct.id, { stock: 9 }, "usr_repo_owner_a");
+    } catch (err: any) {
+      manualStockReductionBlocked = String(err?.message || "").includes("aktif satış sepetlerinde ayrılmış miktarın altına");
+    }
+    recordResult(manualStockReductionBlocked, "Elle stok düzenleme aktif sepetlerde ayrılmış miktarın altına inemez");
+
+    const reservedProductSnapshot = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
+    const unsafeRollEdit = (reservedProductSnapshot?.rolls || []).map(roll => ({
+      ...roll,
+      length: roll.id === "res_roll_1" ? 5 : roll.length
+    }));
+    let manualRollReductionBlocked = false;
+    try {
+      await productRepoA.update(reservationProduct.id, { rolls: unsafeRollEdit, stock: 35 }, "usr_repo_owner_a");
+    } catch (err: any) {
+      manualRollReductionBlocked = String(err?.message || "").includes("aktif satış sepetlerinde ayrılmış");
+    }
+    recordResult(manualRollReductionBlocked, "Elle düzenleme rezerve edilen metrajı top bazında da korur");
+
     await dbA.collection("stock_reservations").doc(ownerReservationId).update({
       expiresAt: new Date(Date.now() - 60_000).toISOString()
     });
