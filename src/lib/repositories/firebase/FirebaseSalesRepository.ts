@@ -185,16 +185,22 @@ export class FirebaseSalesRepository implements SalesRepository {
       if (!(data.tenantId === context.tenantId || data.userId === validUid)) {
         throw new Error("Bu ürün için rezervasyon yapma yetkiniz yok.");
       }
+      let oldReservationData: any = null;
       if (reservationSnap.exists()) {
-        const old = reservationSnap.data();
-        if (old.status !== "active" || old.userId !== validUid || old.productId !== productId || old.tenantId !== context.tenantId) {
+        const existingReservation = reservationSnap.data();
+        if (existingReservation.userId !== validUid || existingReservation.productId !== productId || existingReservation.tenantId !== context.tenantId) {
+          throw new Error("Bu sepet rezervasyonu başka bir kullanıcıya veya ürüne ait.");
+        }
+        if (existingReservation.status === "active") {
+          oldReservationData = existingReservation;
+        } else if (existingReservation.status !== "released" && existingReservation.status !== "expired") {
           throw new Error("Bu sepet rezervasyonu artık kullanılamıyor. Ürünü yeniden sepete ekleyin.");
         }
       }
 
       const working: Product = { id: productSnap.id, ...data } as Product;
       let reservedStock = Number(working.reservedStock || 0);
-      const old = reservationSnap.exists() ? reservationSnap.data() : null;
+      const old = oldReservationData;
       if (old) {
         reservedStock = Math.max(0, reservedStock - Number(old.quantity || 0));
         for (const allocation of old.rollAllocations || []) {
