@@ -584,7 +584,7 @@ export class FirebaseSalesRepository implements SalesRepository {
           if (!roll) throw new Error(`Kumaş topu bulunamadı: ID ${item.selectedRollId}`);
           if (roll.status !== "available") throw new Error(`Seçilen kumaş topu satışa uygun değil: ${roll.rollNumber}`);
           const currentLen = Number(roll.length);
-          if (currentLen < qtyToDeduct) {
+          if (currentLen - Number(roll.reservedLength || 0) < qtyToDeduct) {
             throw new Error(`Seçilen kumaş topunda (${roll.rollNumber}) yeterli kumaş kalmadı! Kalan: ${currentLen}m (Talep edilen: ${qtyToDeduct}m)`);
           }
           const initLen = roll.initialLength !== undefined ? Number(roll.initialLength) : currentLen;
@@ -614,7 +614,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         } else if (isRollTracked && prod.rolls && prod.rolls.length > 0) {
           const availableRollLength = prod.rolls
             .filter(r => r.status === "available")
-            .reduce((sum, r) => sum + Math.max(0, Number(r.length) || 0), 0);
+            .reduce((sum, r) => sum + Math.max(0, Number(r.length || 0) - Number(r.reservedLength || 0)), 0);
           if (availableRollLength < qtyToDeduct) {
             throw new Error(`Satışa uygun toplarda yeterli kumaş yok! Kullanılabilir: ${availableRollLength} m`);
           }
@@ -622,8 +622,9 @@ export class FirebaseSalesRepository implements SalesRepository {
           let remainingDeduct = qtyToDeduct;
           for (const roll of prod.rolls) {
             const currentLen = Number(roll.length) || 0;
-            if (roll.status === "available" && currentLen > 0 && remainingDeduct > 0) {
-              const dec = roundQty(Math.min(currentLen, remainingDeduct));
+            const freeLen = Math.max(0, currentLen - Number(roll.reservedLength || 0));
+            if (roll.status === "available" && freeLen > 0 && remainingDeduct > 0) {
+              const dec = roundQty(Math.min(freeLen, remainingDeduct));
               remainingDeduct = roundQty(remainingDeduct - dec);
               const initLen = roll.initialLength !== undefined ? Number(roll.initialLength) : currentLen;
               roll.initialLength = initLen;
@@ -641,7 +642,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         } else if (prod.boxes && prod.boxes.length > 0) {
           const availableBoxQuantity = prod.boxes
             .filter(b => b.status === "available")
-            .reduce((sum, b) => sum + Math.max(0, Number(b.quantity) || 0), 0);
+            .reduce((sum, b) => sum + Math.max(0, Number(b.quantity || 0) - Number(b.reservedQuantity || 0)), 0);
           if (availableBoxQuantity < qtyToDeduct) {
             throw new Error(`Satışa uygun kolilerde yeterli adet yok! Kullanılabilir: ${availableBoxQuantity}`);
           }
@@ -649,8 +650,9 @@ export class FirebaseSalesRepository implements SalesRepository {
           let remainingDeduct = qtyToDeduct;
           for (const box of prod.boxes) {
             const currentQty = Number(box.quantity) || 0;
-            if (box.status === "available" && currentQty > 0 && remainingDeduct > 0) {
-              const dec = roundQty(Math.min(currentQty, remainingDeduct));
+            const freeQty = Math.max(0, currentQty - Number(box.reservedQuantity || 0));
+            if (box.status === "available" && freeQty > 0 && remainingDeduct > 0) {
+              const dec = roundQty(Math.min(freeQty, remainingDeduct));
               remainingDeduct = roundQty(remainingDeduct - dec);
               const initQty = box.initialQuantity !== undefined ? Number(box.initialQuantity) : currentQty;
               box.initialQuantity = initQty;
@@ -666,8 +668,8 @@ export class FirebaseSalesRepository implements SalesRepository {
           }
           prod.stock = roundQty(prod.boxes.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0));
         } else {
-          if (prod.stock < qtyToDeduct) {
-            throw new Error(`Yetersiz Stok: "${prod.name}" için mevcut stok: ${prod.stock}, istenen miktar: ${qtyToDeduct}`);
+          if (prod.stock - Number(prod.reservedStock || 0) < qtyToDeduct) {
+            throw new Error(`Yetersiz Stok: "${prod.name}" için kullanılabilir stok: ${roundQty(prod.stock - Number(prod.reservedStock || 0))}, istenen miktar: ${qtyToDeduct}`);
           }
           prod.stock = roundQty(Math.max(0, prod.stock - qtyToDeduct));
         }
