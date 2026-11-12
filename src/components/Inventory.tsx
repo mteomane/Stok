@@ -244,6 +244,7 @@ export function Inventory({
 
   // Fabric rolls management states
   const [selectedRollProduct, setSelectedRollProduct] = useState<Product | null>(null);
+  const [showRollDetails, setShowRollDetails] = useState(false);
   const [newRollNumber, setNewRollNumber] = useState("");
   const [newRollLength, setNewRollLength] = useState("");
   const [newRollColorCode, setNewRollColorCode] = useState("");
@@ -1169,7 +1170,7 @@ export function Inventory({
                           </div>
                           <button
                             type="button"
-                            onClick={() => setSelectedRollProduct(p)}
+                            onClick={() => { setShowRollDetails(false); setSelectedRollProduct(p); }}
                             className="p-1 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] rounded-lg flex items-center gap-1 active:scale-95 transition-all shadow-sm cursor-pointer"
                             title="Top Detaylarını Düzenle"
                           >
@@ -1861,7 +1862,7 @@ export function Inventory({
                   Kumaş Topu & Rulo Takip Kartı
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {selectedRollProduct.name} (Toplam Stok: {selectedRollProduct.stock} m)
+                  {selectedRollProduct.name} ({getAvailableStock(selectedRollProduct)} m satılabilir)
                 </p>
               </div>
               <button
@@ -1943,8 +1944,19 @@ export function Inventory({
                 </div>
               </div>
 
+              {/* Roll-level details are hidden by default to keep the product view compact. */}
+              {selectedRollProduct.rolls && selectedRollProduct.rolls.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowRollDetails((value) => !value)}
+                  className="w-full px-3 py-2.5 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-between"
+                >
+                  <span>{showRollDetails ? "Top Bazında Ayrıntıları Gizle" : "Top Bazında Ayrıntıları Aç (" + selectedRollProduct.rolls.length + " kayıt)"}</span>
+                  {showRollDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+              )}
               {/* List of current rolls */}
-              <div className="space-y-2">
+              <div className={`space-y-2 ${showRollDetails ? "" : "hidden"}`}>
                 <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Mevcut Kumaş Topları</span>
                 
                 {(!selectedRollProduct.rolls || selectedRollProduct.rolls.length === 0) ? (
