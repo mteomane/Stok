@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from "react";
-import { Product, CartItem, Customer, Sale, FabricRoll, ProductBox } from "../types";
 import { auth } from "../lib/firebase";
 import { getCustomers, roundQty } from "../lib/firestoreService";
 import { 
@@ -14,7 +13,6 @@ import {
   CreditCard,
   DollarSign,
   Scissors,
-  Layers,
   Loader2,
   Camera,
   Barcode as BarcodeIcon,
@@ -58,8 +56,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
   const [showCameraScanner, setShowCameraScanner] = useState(false);
   const [scannerFeedback, setScannerFeedback] = useState<string | null>(null);
 
-  // Roll & Box selection states
-  const [selectedRollId, setSelectedRollId] = useState<string>("");
+  // Box selection remains explicit; fabric rolls are allocated automatically by FIFO.
   const [selectedBoxId, setSelectedBoxId] = useState<string>("");
   const [cutLength, setCutLength] = useState<string>("");
 
@@ -125,7 +122,6 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
 
   const selectProductToConfigure = (prod: Product) => {
     setSelectedProduct(prod);
-    setSelectedRollId("");
     setSelectedBoxId("");
     setCutLength(shouldShowRolls(prod) ? "1" : "");
     setQuantity(1);
@@ -141,7 +137,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
 
     const hasBoxes = product.boxes && product.boxes.length > 0;
 
-    const finalRollId = isFabric && selectedRollId ? selectedRollId : undefined;
+    const finalRollId = undefined; // Fabric is always allocated automatically from the oldest available rolls (FIFO).
     const finalBoxId = hasBoxes && selectedBoxId ? selectedBoxId : undefined;
     const finalCutLength = isFabric ? Number(cutLength || qty) : undefined;
     const requiredQuantity = finalCutLength !== undefined ? finalCutLength : qty;
@@ -264,7 +260,6 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
     setSearch("");
     setSelectedProduct(null);
     setQuantity(1);
-    setSelectedRollId("");
     setSelectedBoxId("");
     setCutLength("");
   };
@@ -583,45 +578,20 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                 </div>
               </div>
 
-              {/* 1. KUMAŞ RULO SEÇİMİ */}
+              {/* Fabric stock is displayed as one product; physical rolls stay behind the scenes and are consumed FIFO. */}
               {shouldShowRolls(selectedProduct) && (
-                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3 text-xs">
-                  <span className="font-bold text-slate-700 flex items-center gap-1.5 border-b border-slate-200 pb-1.5">
-                    <Scissors className="w-4 h-4 text-indigo-600" />
-                    Kumaş Topu / Rulo Seçimi
-                  </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Top / Rulo Seçimi</label>
-                      <select
-                        value={selectedRollId}
-                        onChange={(e) => {
-                          const rollId = e.target.value;
-                          setSelectedRollId(rollId);
-                          const matchedRoll = selectedProduct.rolls?.find(r => r.id === rollId);
-                          setCutLength("1");
-                          setQuantity(1);
-                        }}
-                        className="w-full p-2 border border-slate-200 rounded-lg bg-white focus:outline-none text-xs font-medium"
-                      >
-                        <option value="">Otomatik Sıralı Eksiltme (FIFO - En Eski Top)</option>
-                        {selectedProduct.rolls
-                          ?.filter((r) => r.status === "available" && r.length > 0)
-                          .map((r) => (
-                            <option key={r.id} value={r.id}>
-                              {r.rollNumber} {r.colorName ? `(${r.colorName})` : ""} - Kalan: {r.length} m
-                            </option>
-                          ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
-                        Kesim Boyu (Metre)
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <Scissors className="w-4 h-4 text-indigo-600 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">
+                        Kesim Miktarı (Metre)
                       </label>
                       <input
                         type="number"
+                        min="0.1"
                         step="0.1"
+                        max={selectedProduct.stock}
                         value={cutLength}
                         onChange={(e) => {
                           const val = e.target.value;
@@ -631,17 +601,13 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                             setQuantity(Math.ceil(parsedVal));
                           }
                         }}
-                        placeholder={`Maks: ${
-                          selectedRollId 
-                            ? (selectedProduct.rolls?.find(r => r.id === selectedRollId)?.length || selectedProduct.stock) 
-                            : selectedProduct.stock
-                        } m`}
+                        placeholder={`Toplam stok: ${selectedProduct.stock} m`}
                         className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
                       />
                     </div>
                   </div>
-                  <span className="text-[10px] text-indigo-600 block leading-tight font-medium">
-                    Belirli bir top seçildiğinde o toptan kesim yapılır; seçilmezse en eski toplardan sıralı düşülür.
+                  <span className="text-[10px] text-indigo-700 block leading-tight font-medium">
+                    Toplar tek tek seçilmez. Satış, en eski uygun kumaş topundan başlayarak otomatik FIFO sırasıyla karşılanır.
                   </span>
                 </div>
               )}
