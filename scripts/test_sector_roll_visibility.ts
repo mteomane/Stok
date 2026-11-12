@@ -1,5 +1,5 @@
 import type { Product } from "../src/types";
-import { getRollStockBalance, shouldShowRolls } from "../src/lib/sectorConfig";
+import { getAvailableBoxQuantity, getAvailableRollLength, getAvailableStock, getRollStockBalance, shouldShowRolls } from "../src/lib/sectorConfig";
 
 function makeProduct(overrides: Partial<Product> = {}): Product {
   return {
@@ -22,6 +22,11 @@ function assertEqual(actual: boolean, expected: boolean, label: string): void {
   console.log(`[PASS] ${label}`);
 }
 
+const reservedFabric = makeProduct({ stock: 61, reservedStock: 10, rolls: [{ id: "r1", rollNumber: "Top 1", length: 31, initialLength: 31, reservedLength: 10, status: "available" }] });
+assertEqual(getAvailableStock(reservedFabric) === 51, true, "Sepette rezerve edilen 10 metre diğer satıcılar için kullanılabilir stoktan düşer");
+assertEqual(getAvailableRollLength(reservedFabric.rolls![0]) === 21, true, "Bir topun rezerve edilen metrajı başka bir satışa sunulmaz");
+const reservedBox = { id: "b1", boxNumber: "Koli 1", quantity: 24, initialQuantity: 24, reservedQuantity: 4, status: "available" as const };
+assertEqual(getAvailableBoxQuantity(reservedBox) === 20, true, "Koli içindeki rezerve adetler başka satıcıların stokundan düşer");
 // A textile company may sell both fabric by the meter and ordinary accessories.
 // The company-wide sector must not turn every product into a roll.
 assertEqual(
