@@ -340,6 +340,16 @@ export function Inventory({
       alert("Lütfen geçerli bir rulo uzunluğu girin.");
       return;
     }
+    const targetRoll = (selectedRollProduct.rolls || []).find((r) => r.id === rollId);
+    if (!targetRoll) {
+      alert("Düzenlenecek kumaş topu bulunamadı.");
+      return;
+    }
+    const reservedLength = Number(targetRoll.reservedLength || 0);
+    if (newLen < reservedLength || (editingRollStatus === "sold" && reservedLength > 0)) {
+      alert("Bu topun " + reservedLength + " metresi aktif satış sepetlerinde ayrılmış. Rezervasyon bitmeden bu miktarın altına düşürülemez veya top satıldı olarak kapatılamaz.");
+      return;
+    }
 
     const updatedRolls = (selectedRollProduct.rolls || []).map((r) => {
       if (r.id === rollId) {
@@ -379,6 +389,12 @@ export function Inventory({
 
   const handleDeleteRoll = async (rollId: string) => {
     if (!selectedRollProduct) return;
+    const targetRoll = (selectedRollProduct.rolls || []).find((r) => r.id === rollId);
+    if (!targetRoll) return;
+    if (Number(targetRoll.reservedLength || 0) > 0) {
+      alert("Bu topun " + targetRoll.reservedLength + " metresi aktif satış sepetlerinde ayrılmış. Rezervasyon bitmeden top silinemez.");
+      return;
+    }
     if (!confirm("Bu kumaş topunu silmek istediğinize emin misiniz? Bu işlem toplam stok miktarını güncelleyecektir.")) return;
 
     const updatedRolls = (selectedRollProduct.rolls || []).filter((r) => r.id !== rollId);
