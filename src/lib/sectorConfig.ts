@@ -150,6 +150,22 @@ export function shouldShowRolls(product: Product | null | undefined, activeSecto
   return hasFabricMetadata;
 }
 
+/**
+ * Availability shown to sellers is physical stock minus active cart reservations.
+ * The physical stock value remains intact until checkout is committed.
+ */
+export function getAvailableStock(product: Pick<Product, "stock" | "reservedStock">): number {
+  return Number(Math.max(0, Number(product.stock || 0) - Number(product.reservedStock || 0)).toFixed(3));
+}
+
+export function getAvailableRollLength(roll: Pick<NonNullable<Product["rolls"]>[number], "length" | "reservedLength">): number {
+  return Number(Math.max(0, Number(roll.length || 0) - Number(roll.reservedLength || 0)).toFixed(3));
+}
+
+export function getAvailableBoxQuantity(box: Pick<NonNullable<Product["boxes"]>[number], "quantity" | "reservedQuantity">): number {
+  return Number(Math.max(0, Number(box.quantity || 0) - Number(box.reservedQuantity || 0)).toFixed(3));
+}
+
 export interface RollStockBalance {
   hasRollRecords: boolean;
   trackedRollLength: number;
