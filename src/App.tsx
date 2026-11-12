@@ -51,6 +51,9 @@ import {
   getCustomers,
   updateCustomer,
   processSaleTransaction,
+  reserveStockForSale,
+  releaseStockReservation,
+  cleanupExpiredStockReservations,
   getTenantEntitlement,
   getOrCreateTenantContext,
   subscribeProducts,
@@ -153,6 +156,8 @@ export default function App() {
     try {
       assertAuthenticated(uid, "App.fetchDataForUser");
       if (showLoader) setIsLoading(true);
+      // Release abandoned POS holds when a tenant opens the app again.
+      await cleanupExpiredStockReservations(uid).catch((err) => console.warn("Stock reservation cleanup notice:", err));
       const [productsRes, salesRes, entitlementRes, contextRes] = await Promise.all([
         getProducts(uid, true),
         getSales(uid),
@@ -296,7 +301,7 @@ export default function App() {
 
   // Sales mutation (ACID Atomic Transaction)
   const handleRecordSale = async (
-    items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number; selectedBoxId?: string }[],
+    items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number; selectedBoxId?: string; reservationId?: string }[],
     customerId?: string,
     amountPaid?: number,
     idempotencyKey?: string,
@@ -316,6 +321,28 @@ export default function App() {
 
     await fetchData(false);
     return saleResult;
+  };
+
+  const handleReserveStock = async (
+    productId: string,
+    quantity: number,
+    reservationId: string,
+    selectedBoxId?: string
+  ) => {
+    const uid = user?.uid || auth.currentUser?.uid;
+    if (!uid) throw new Error("Oturum açık değil.");
+    const updatedProduct = await reserveStockForSale(uid, productId, quantity, reservationId, selectedBoxId);
+    setProducts((prev) => prev.map((p) => p.id === productId ? { ...p, ...updatedProduct } : p));
+    return updatedProduct;
+  };
+
+  const handleReleaseStockReservation = async (reservationId: string) => {
+    const uid = user?.uid || auth.currentUser?.uid;
+    if (!uid) return;
+    const updatedProduct = await releaseStockReservation(uid, reservationId);
+    if (updatedProduct) {
+      setProducts((prev) => prev.map((p) => p.id === updatedProduct.id ? { ...p, ...updatedProduct } : p));
+    }
   };
 
   const handleSignOut = async () => {
@@ -662,7 +689,7 @@ export default function App() {
                   <OrdersWaybills products={activeProducts} onRefreshProducts={fetchData} />
                 )}
                 {activeTab === "sale" && (
-                  <QuickSale products={activeProducts} onRecordSale={handleRecordSale} />
+                  <QuickSale products={activeProducts} onRecordSale={handleRecordSale} onReserveStock={handleReserveStock} onReleaseStockReservation={handleReleaseStockReservation} />
                 )}
                 {activeTab === "crm" && (
                   <Crm onRefreshData={fetchData} />
