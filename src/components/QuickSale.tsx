@@ -76,6 +76,24 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
   const [completedSale, setCompletedSale] = useState<Sale | null>(null);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
 
+  // Keep the open selector and cart lines synchronized with shared stock updates from other sellers.
+  useEffect(() => {
+    setSelectedProduct((current) => {
+      if (!current) return current;
+      return products.find((product) => product.id === current.id) || current;
+    });
+    setCart((current) => {
+      let changed = false;
+      const next = current.map((item) => {
+        const latest = products.find((product) => product.id === item.product.id);
+        if (!latest || latest === item.product) return item;
+        changed = true;
+        return { ...item, product: latest };
+      });
+      return changed ? next : current;
+    });
+  }, [products]);
+
   // Load customers for checkout selection
   const fetchCustomers = async () => {
     try {
