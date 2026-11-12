@@ -241,6 +241,21 @@ export default function App() {
     };
   }, [user?.uid]);
 
+  // Re-check abandoned cart holds while the app remains open.
+  // Product listeners propagate released quantities to other signed-in sellers.
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid || uid === "demo-user" || uid.startsWith("local-")) return;
+
+    const intervalId = window.setInterval(() => {
+      cleanupExpiredStockReservations(uid).catch((err) => {
+        console.warn("Periodic stock reservation cleanup notice:", err);
+      });
+    }, 60_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [user?.uid]);
+
   // Product mutations with Optimistic UI updates
   const handleAddProduct = async (newProduct: Omit<Product, "id">) => {
     const uid = user?.uid || auth.currentUser?.uid;
