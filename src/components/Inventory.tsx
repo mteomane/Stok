@@ -1172,31 +1172,6 @@ export function Inventory({
                             Topları Yönet
                           </button>
                         </div>
-                        {/* Tiny roll badge visualization */}
-                        {p.rolls && p.rolls.length > 0 && (
-                          <div className="flex flex-wrap gap-1 mt-1 max-h-[44px] overflow-y-auto">
-                            {p.rolls.slice(0, 5).map((r) => (
-                              <span
-                                key={r.id}
-                                className={`text-[9px] px-1.5 py-0.5 rounded font-bold font-mono ${
-                                  r.status === "sold"
-                                    ? "bg-slate-200 text-slate-500 line-through"
-                                    : r.status === "reserved"
-                                    ? "bg-amber-100 text-amber-700"
-                                    : "bg-emerald-100 text-emerald-800"
-                                }`}
-                              >
-                                {r.rollNumber} ({r.length}m)
-                              </span>
-                            ))}
-                            {p.rolls.length > 5 && (
-                              <span className="text-[9px] text-slate-400 font-bold font-mono px-1">
-                                +{p.rolls.length - 5} top daha...
-                              </span>
-                            )}
-                          </div>
-                        )}
-
                         {/* Legacy Fabric Stock Migration Option */}
                         {(!p.rolls || p.rolls.length === 0) && p.stock > 0 && (
                           <div className="bg-indigo-50/80 p-2.5 rounded-lg border border-indigo-200 flex items-center justify-between gap-2 mt-1">
