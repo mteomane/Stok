@@ -512,13 +512,13 @@ export async function runProductionRepositoryTests() {
     });
     const afterReservedSale = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
     recordResult(
-      Boolean(reservedSale.stockDeducted === true && afterReservedSale?.stock === 51 && Number(afterReservedSale?.reservedStock || 0) === 0 && getAvailableStock(afterReservedSale) === 51),
+      Boolean(afterReservedSale && reservedSale.stockDeducted === true && afterReservedSale.stock === 51 && Number(afterReservedSale.reservedStock || 0) === 0 && getAvailableStock(afterReservedSale) === 51),
       "Rezerve edilen 10 metre satışta ikinci kez düşülmez; fiziksel ve satılabilir stok 51 metre olur"
     );
     const reservationSaleCancel = await salesRepoA.cancelSale(reservedSale.id, "usr_repo_owner_a", "Rezervasyon testi iadesi", "reservation_cancel_001");
     const afterReservationCancel = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
     recordResult(
-      Boolean(reservationSaleCancel.stockRestored === true && afterReservationCancel?.stock === 61 && getAvailableStock(afterReservationCancel) === 61),
+      Boolean(afterReservationCancel && reservationSaleCancel.stockRestored === true && afterReservationCancel.stock === 61 && getAvailableStock(afterReservationCancel) === 61),
       "Satış iptalinde rezerve edilmiş metraj doğru kumaş toplarına geri yüklenir"
     );
 
