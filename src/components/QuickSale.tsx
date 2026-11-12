@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { Product, CartItem, Customer, Sale, ProductBox } from "../types";
 import { auth } from "../lib/firebase";
 import { getCustomers, roundQty } from "../lib/firestoreService";
 import { 
