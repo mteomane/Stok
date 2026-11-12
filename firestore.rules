@@ -168,6 +168,18 @@ service cloud.firestore {
       allow delete: if isDocOwner() && isTenantAdminOrOwner();
     }
 
+    // Temporary POS cart reservations. Only members of the same tenant may
+    // inspect or release holds; documents are immutable in tenant/user ownership.
+    match /stock_reservations/{docId} {
+      allow get, list: if isDocOwner();
+      allow create: if willBeDocOwner();
+      allow update: if preservesDocOwnership() &&
+        request.resource.data.tenantId == resource.data.tenantId &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.productId == resource.data.productId;
+      allow delete: if false;
+    }
+
     // Sales Logs & Fişler
     match /sales/{docId} {
       // Idempotency read: Non-existent document check strictly restricted to caller's verified tenant prefix
