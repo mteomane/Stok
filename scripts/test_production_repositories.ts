@@ -33,6 +33,7 @@ import { FirebaseSupplierRepository } from "../src/lib/repositories/firebase/Fir
 import { setTestAuthenticatedUid } from "../src/lib/authGuard";
 import { memoryCache } from "../src/lib/cache";
 import { roundQty, round2 } from "../src/lib/repositories/firebase/helpers";
+import { getAvailableStock } from "../src/lib/sectorConfig";
 
 const EMULATOR_HOST = "127.0.0.1";
 const EMULATOR_PORT = 8088;
@@ -452,6 +453,75 @@ export async function runProductionRepositoryTests() {
     );
 
     // -------------------------------------------------------------
+    // -------------------------------------------------------------
+    // SENARYO 3D: ÇOKLU SATICI SEPET REZERVASYONU VE GERÇEK STOK ÇIKIŞI
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3D: Çoklu satıcı sepet rezervasyonu ---");
+    const reservationProduct = await productRepoA.create("usr_repo_owner_a", {
+      name: "61 Metre Rezervasyon Test Kumaşı",
+      sku: "RES-FAB-061",
+      category: "Kumaş",
+      unit: "Metre",
+      price: 100,
+      stock: 61,
+      reservedStock: 0,
+      minStock: 0,
+      rolls: [
+        { id: "res_roll_1", rollNumber: "Top 1", length: 31, initialLength: 31, status: "available" },
+        { id: "res_roll_2", rollNumber: "Top 2", length: 30, initialLength: 30, status: "available" }
+      ]
+    });
+    const ownerReservationId = "cart_usr_repo_owner_a_res_001";
+    setTestAuthenticatedUid("usr_repo_owner_a");
+    const ownerReservedProduct = await salesRepoA.reserveStock("usr_repo_owner_a", reservationProduct.id, 10, ownerReservationId);
+    recordResult(
+      Boolean(ownerReservedProduct.reservedStock === 10 && getAvailableStock(ownerReservedProduct) === 51),
+      "İlk satıcı 10 metreyi sepete eklediğinde diğer satıcılara açık stok 61m yerine 51m görünür"
+    );
+
+    const staffUserRepoA = new FirebaseUserRepository(dbA);
+    const salesRepoStaffA = new FirebaseSalesRepository(staffUserRepoA, dbA);
+    const staffReservationId = "cart_usr_repo_staff_a_res_001";
+    setTestAuthenticatedUid("usr_repo_staff_a");
+    const staffReservedProduct = await salesRepoStaffA.reserveStock("usr_repo_staff_a", reservationProduct.id, 45, staffReservationId);
+    recordResult(
+      Boolean(getAvailableStock(staffReservedProduct) === 6),
+      "Aynı firmadaki ikinci satıcı yalnızca kalan 51 metreden 45 metre ayırabilir"
+    );
+
+    let overReservationBlocked = false;
+    try {
+      await salesRepoStaffA.reserveStock("usr_repo_staff_a", reservationProduct.id, 7, "cart_usr_repo_staff_a_res_over");
+    } catch (err: any) {
+      overReservationBlocked = String(err?.message || "").includes("Yetersiz kullanılabilir stok");
+    }
+    recordResult(overReservationBlocked, "İki satıcı aynı 61 metreyi aşan toplam miktarı rezerve edemez");
+
+    await salesRepoStaffA.releaseStockReservation("usr_repo_staff_a", staffReservationId);
+    const afterStaffRelease = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(afterStaffRelease && getAvailableStock(afterStaffRelease) === 51),
+      "İkinci satıcının sepeti boşaltıldığında yalnızca kendi 45 metresi yeniden satışa açılır"
+    );
+
+    setTestAuthenticatedUid("usr_repo_owner_a");
+    const reservedSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{ productId: reservationProduct.id, quantity: 10, cutLength: 10, reservationId: ownerReservationId }],
+      amountPaid: 0,
+      idempotencyKey: "reservation_sale_001"
+    });
+    const afterReservedSale = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(reservedSale.stockDeducted === true && afterReservedSale?.stock === 51 && Number(afterReservedSale?.reservedStock || 0) === 0 && getAvailableStock(afterReservedSale) === 51),
+      "Rezerve edilen 10 metre satışta ikinci kez düşülmez; fiziksel ve satılabilir stok 51 metre olur"
+    );
+    const reservationSaleCancel = await salesRepoA.cancelSale(reservedSale.id, "usr_repo_owner_a", "Rezervasyon testi iadesi", "reservation_cancel_001");
+    const afterReservationCancel = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(reservationSaleCancel.stockRestored === true && afterReservationCancel?.stock === 61 && getAvailableStock(afterReservationCancel) === 61),
+      "Satış iptalinde rezerve edilmiş metraj doğru kumaş toplarına geri yüklenir"
+    );
+
     // SENARYO 4: SİPARİŞ OLUŞTURMA VE ATOMİK İPTAL İLE METRAJ İADESİ
     // -------------------------------------------------------------
     console.log("\n--- BÖLÜM 4: FirebaseOrderRepository (createAtomic & cancelOrderAtomic) ---");
