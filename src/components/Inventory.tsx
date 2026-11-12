@@ -245,6 +245,12 @@ export function Inventory({
   // Fabric rolls management states
   const [selectedRollProduct, setSelectedRollProduct] = useState<Product | null>(null);
   const [showRollDetails, setShowRollDetails] = useState(false);
+
+  useEffect(() => {
+    if (!selectedRollProduct) return;
+    const latest = products.find((product) => product.id === selectedRollProduct.id);
+    if (latest && latest !== selectedRollProduct) setSelectedRollProduct(latest);
+  }, [products, selectedRollProduct?.id]);
   const [newRollNumber, setNewRollNumber] = useState("");
   const [newRollLength, setNewRollLength] = useState("");
   const [newRollColorCode, setNewRollColorCode] = useState("");
