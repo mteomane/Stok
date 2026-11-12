@@ -577,6 +577,8 @@ export class FirebaseProductRepository implements ProductRepository {
     memoryCache.invalidate("products_");
 
     let normalizedUpdates = { ...updates };
+    // Cart reservation counters are repository-managed and must never be overwritten by ordinary product edits.
+    delete (normalizedUpdates as any).reservedStock;
     if (updates.metadata || updates.attributes) {
       const synced = syncSectorMetadata({
         metadata: updates.metadata,
@@ -615,7 +617,7 @@ export class FirebaseProductRepository implements ProductRepository {
         }
         normalizedUpdates.rolls = normalizedUpdates.rolls.map(nextRoll => {
           const oldRoll = oldRolls.find(r => r.id === nextRoll.id);
-          return { ...nextRoll, reservedLength: Number(oldRoll?.reservedLength || nextRoll.reservedLength || 0) };
+          return { ...nextRoll, reservedLength: Number(oldRoll?.reservedLength || 0) };
         });
       }
       if (normalizedUpdates.boxes) {
@@ -630,7 +632,7 @@ export class FirebaseProductRepository implements ProductRepository {
         }
         normalizedUpdates.boxes = normalizedUpdates.boxes.map(nextBox => {
           const oldBox = oldBoxes.find(b => b.id === nextBox.id);
-          return { ...nextBox, reservedQuantity: Number(oldBox?.reservedQuantity || nextBox.reservedQuantity || 0) };
+          return { ...nextBox, reservedQuantity: Number(oldBox?.reservedQuantity || 0) };
         });
       }
       const updated = list.map(p => p.id === productId ? { ...p, ...normalizedUpdates } : p);
