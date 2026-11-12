@@ -48,7 +48,7 @@ export function Dashboard({
     const totalProductsCount = products.length;
     const totalStockQuantity = products.reduce((sum, p) => sum + getAvailableStock(p), 0);
     const lowStockProducts = products.filter((p) => getAvailableStock(p) <= p.minStock);
-    const outOfStockCount = lowStockProducts.filter((p) => p.stock <= 0).length;
+    const outOfStockCount = lowStockProducts.filter((p) => getAvailableStock(p) <= 0).length;
     const criticalDeficit = lowStockProducts.reduce((sum, p) => sum + Math.max(0, p.minStock - getAvailableStock(p)), 0);
     const stockHealthRate = totalProductsCount > 0 
       ? Math.round(((totalProductsCount - lowStockProducts.length) / totalProductsCount) * 100) 
@@ -283,7 +283,7 @@ export function Dashboard({
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {lowStockProducts.slice(0, 6).map((p) => {
-                const deficit = Math.max(0, p.minStock - p.stock);
+                const deficit = Math.max(0, p.minStock - getAvailableStock(p));
                 const percent = p.minStock > 0 ? Math.min(100, Math.round((getAvailableStock(p) / p.minStock) * 100)) : 0;
                 const isZero = p.stock <= 0;
 
