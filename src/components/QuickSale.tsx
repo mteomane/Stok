@@ -38,6 +38,7 @@ interface QuickSaleProps {
       selectedRollId?: string; 
       cutLength?: number;
       selectedBoxId?: string;
+      reservationId?: string;
     }[], 
     customerId?: string, 
     amountPaid?: number,
@@ -163,6 +164,19 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
       const desiredQuantity = roundQty((existingItem?.quantity || 0) + addedQuantity);
       const alreadyHeldByThisCart = Number(existingItem?.quantity || 0);
       const availableForThisCart = roundQty(getAvailableStock(product) + alreadyHeldByThisCart);
+      if (isFabric && product.rolls?.length) {
+        const availableRolls = product.rolls.reduce((sum, roll) => sum + getAvailableRollLength(roll), 0);
+        if (roundQty(availableRolls + alreadyHeldByThisCart) < desiredQuantity) {
+          throw new Error("Satışa uygun kumaş toplarında yeterli serbest metraj bulunmuyor.");
+        }
+      }
+      if (finalBoxId) {
+        const selectedBox = product.boxes?.find(box => box.id === finalBoxId);
+        const availableInBox = selectedBox ? getAvailableBoxQuantity(selectedBox) + alreadyHeldByThisCart : 0;
+        if (!selectedBox || availableInBox < desiredQuantity) {
+          throw new Error("Seçilen kolide bu miktarı ayıracak yeterli serbest stok bulunmuyor.");
+        }
+      }
       if (availableForThisCart < desiredQuantity) {
         throw new Error("Yetersiz kullanılabilir stok. Şu anda en fazla " + availableForThisCart + " " + (isFabric ? "metre" : (product.unit || "adet")) + " ayırabilirsiniz.");
       }
