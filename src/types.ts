@@ -5,6 +5,7 @@ export interface FabricRoll {
   length: number;    // current remaining length in meters
   initialLength: number; // original length in meters
   soldLength?: number;   // total cut/sold amount in meters
+  reservedLength?: number; // metres currently held in active sales carts
   colorCode?: string;    // Renk Kodu
   colorName?: string;    // Renk Adı
   color?: string;        // Renk Adı (alias)
@@ -23,6 +24,7 @@ export interface ProductBox {
   initialQuantity: number; // İlk gelen adet (örn: 50)
   quantity: number;        // Kalan güncel adet (örn: 49)
   soldQuantity?: number;   // Çıkış yapılan / satılan adet
+  reservedQuantity?: number; // units currently held in active sales carts
   entryDate?: string;      // Giriş Tarihi
   supplier?: string;       // Gelen Firma
   status: 'available' | 'depleted' | 'reserved';
@@ -190,7 +192,8 @@ export interface Product {
   unit?: string;     // 'adet' | 'metre' | 'kg' | 'paket' | 'koli' | 'litre' (Varsayılan: 'adet' veya sektöre göre)
   price: number;
   costPrice?: number; // Alış Fiyatı (Opsiyonel)
-  stock: number;
+  stock: number; // Physical remaining stock; active cart reservations are tracked separately.
+  reservedStock?: number; // Stock currently reserved by active sales carts.
   minStock: number;
   description?: string; // Ürün Açıklaması
   warehouseId?: string; // İlgili depo referansı
@@ -260,6 +263,7 @@ export interface CartItem {
   selectedRollId?: string; // Optional specific fabric roll selected for sale
   selectedBoxId?: string;  // Optional specific box selected for sale
   cutLength?: number;       // Optional length cut from the roll
+  reservationId?: string;   // Server-side stock reservation held for this cart line
   selectedBoxNumber?: string;
   unit?: string;
 }
