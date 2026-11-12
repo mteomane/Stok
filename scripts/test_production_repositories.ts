@@ -485,6 +485,21 @@ export async function runProductionRepositoryTests() {
       "İlk satıcı 10 metreyi sepete eklediğinde diğer satıcılara açık stok 61m yerine 51m görünür"
     );
 
+    await dbA.collection("stock_reservations").doc(ownerReservationId).update({
+      expiresAt: new Date(Date.now() - 60_000).toISOString()
+    });
+    await salesRepoA.cleanupExpiredReservations("usr_repo_owner_a");
+    const afterExpiredHoldRelease = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(afterExpiredHoldRelease && getAvailableStock(afterExpiredHoldRelease) === 61 && Number(afterExpiredHoldRelease.reservedStock || 0) === 0),
+      "Süresi dolan 10 metrelik sepet ayırması otomatik çözülür ve stok tekrar 61 metre olur"
+    );
+    const renewedOwnerReservation = await salesRepoA.reserveStock("usr_repo_owner_a", reservationProduct.id, 10, ownerReservationId);
+    recordResult(
+      Boolean(getAvailableStock(renewedOwnerReservation) === 51),
+      "Aynı satıcı süresi dolan kendi sepet rezervasyonunu güvenle yenileyebilir"
+    );
+
     const staffUserRepoA = new FirebaseUserRepository(dbStaffA);
     const salesRepoStaffA = new FirebaseSalesRepository(staffUserRepoA, dbStaffA);
     const staffReservationId = "cart_usr_repo_staff_a_res_001";
