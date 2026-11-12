@@ -83,6 +83,312 @@ export class FirebaseSalesRepository implements SalesRepository {
   }
 
   /**
+   * Atomically holds stock for a cart line. The physical stock remains unchanged;
+   * reservedStock / reservedLength / reservedQuantity reduce what other sellers can offer.
+   */
+  async reserveStock(
+    uid: string,
+    productId: string,
+    quantity: number,
+    reservationId: string,
+    selectedBoxId?: string
+  ): Promise<Product> {
+    const validUid = assertAuthenticated(uid, "SalesRepository.reserveStock");
+    const qty = roundQty(Number(quantity));
+    if (!Number.isFinite(qty) || qty <= 0) throw new Error("Rezerve edilecek miktar sıfırdan büyük olmalıdır.");
+    if (!reservationId || reservationId.includes("/")) throw new Error("Geçersiz sepet rezervasyon kimliği.");
+
+    const context = await this.userRepo.getOrCreateContext(validUid);
+    const now = Date.now();
+    const expiresAt = new Date(now + 15 * 60 * 1000).toISOString();
+
+    if (isDemoUser(validUid)) {
+      const products = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
+      const product = products.find(p => p.id === productId);
+      if (!product) throw new Error("Ürün bulunamadı.");
+      const reservations = getLocal<any[]>("stokpro_demo_reservations", []);
+      const old = reservations.find(r => r.id === reservationId && r.status === "active");
+      if (old && old.productId !== productId) throw new Error("Rezervasyon başka bir ürüne ait.");
+
+      const working: Product = JSON.parse(JSON.stringify(product));
+      let reservedStock = Number(working.reservedStock || 0);
+      if (old) {
+        reservedStock = Math.max(0, reservedStock - Number(old.quantity || 0));
+        for (const allocation of old.rollAllocations || []) {
+          const roll = working.rolls?.find(r => r.id === allocation.rollId);
+          if (roll) roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - allocation.length));
+        }
+        for (const allocation of old.boxAllocations || []) {
+          const box = working.boxes?.find(b => b.id === allocation.boxId);
+          if (box) box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - allocation.quantity));
+        }
+      }
+
+      const availableStock = roundQty(Math.max(0, Number(working.stock || 0) - reservedStock));
+      if (availableStock < qty) throw new Error(`Yetersiz kullanılabilir stok. Şu anda yalnızca ${availableStock} ${shouldShowRolls(working) ? "metre" : (working.unit || "adet")} ayırabilirsiniz.`);
+
+      const rollAllocations: Array<{ rollId: string; length: number }> = [];
+      const boxAllocations: Array<{ boxId: string; quantity: number }> = [];
+      if (shouldShowRolls(working) && working.rolls?.length) {
+        let remaining = qty;
+        for (const roll of working.rolls) {
+          const available = Math.max(0, Number(roll.length || 0) - Number(roll.reservedLength || 0));
+          const amount = roundQty(Math.min(available, remaining));
+          if (roll.status === "available" && amount > 0) {
+            roll.reservedLength = roundQty(Number(roll.reservedLength || 0) + amount);
+            rollAllocations.push({ rollId: roll.id, length: amount });
+            remaining = roundQty(remaining - amount);
+          }
+        }
+        if (remaining > 0) throw new Error(`Satışa uygun kumaş toplarında yalnızca ${roundQty(qty - remaining)} m ayrılabilir.`);
+      } else if (working.boxes?.length) {
+        let remaining = qty;
+        const orderedBoxes = selectedBoxId
+          ? working.boxes.filter(b => b.id === selectedBoxId)
+          : working.boxes;
+        for (const box of orderedBoxes) {
+          const available = Math.max(0, Number(box.quantity || 0) - Number(box.reservedQuantity || 0));
+          const amount = roundQty(Math.min(available, remaining));
+          if (box.status === "available" && amount > 0) {
+            box.reservedQuantity = roundQty(Number(box.reservedQuantity || 0) + amount);
+            boxAllocations.push({ boxId: box.id, quantity: amount });
+            remaining = roundQty(remaining - amount);
+          }
+        }
+        if (remaining > 0) throw new Error(`Satışa uygun kolilerde yalnızca ${roundQty(qty - remaining)} adet ayrılabilir.`);
+      }
+
+      working.reservedStock = roundQty(reservedStock + qty);
+      const index = products.findIndex(p => p.id === productId);
+      products[index] = working;
+      setLocal("stokpro_demo_products", products);
+      const nextReservations = reservations.filter(r => r.id !== reservationId);
+      nextReservations.push({
+        id: reservationId, tenantId: context.tenantId, userId: validUid, productId,
+        quantity: qty, rollAllocations, boxAllocations, status: "active", createdAt: new Date(now).toISOString(), expiresAt
+      });
+      setLocal("stokpro_demo_reservations", nextReservations);
+      return working;
+    }
+
+    // Release expired holds before attempting a new hold.
+    await this.cleanupExpiredReservations(validUid);
+
+    const productRef = doc(this.db, "products", productId);
+    const reservationRef = doc(this.db, "stock_reservations", reservationId);
+
+    return runTransaction(this.db, async (transaction) => {
+      const productSnap = await transaction.get(productRef);
+      const reservationSnap = await transaction.get(reservationRef);
+      if (!productSnap.exists()) throw new Error("Ürün bulunamadı.");
+      const data = productSnap.data();
+      if (!(data.tenantId === context.tenantId || data.userId === validUid)) {
+        throw new Error("Bu ürün için rezervasyon yapma yetkiniz yok.");
+      }
+      if (reservationSnap.exists()) {
+        const old = reservationSnap.data();
+        if (old.status !== "active" || old.userId !== validUid || old.productId !== productId || old.tenantId !== context.tenantId) {
+          throw new Error("Bu sepet rezervasyonu artık kullanılamıyor. Ürünü yeniden sepete ekleyin.");
+        }
+      }
+
+      const working: Product = { id: productSnap.id, ...data } as Product;
+      let reservedStock = Number(working.reservedStock || 0);
+      const old = reservationSnap.exists() ? reservationSnap.data() : null;
+      if (old) {
+        reservedStock = Math.max(0, reservedStock - Number(old.quantity || 0));
+        for (const allocation of old.rollAllocations || []) {
+          const roll = working.rolls?.find(r => r.id === allocation.rollId);
+          if (roll) roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - Number(allocation.length || 0)));
+        }
+        for (const allocation of old.boxAllocations || []) {
+          const box = working.boxes?.find(b => b.id === allocation.boxId);
+          if (box) box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - Number(allocation.quantity || 0)));
+        }
+      }
+
+      const availableStock = roundQty(Math.max(0, Number(working.stock || 0) - reservedStock));
+      if (availableStock < qty) {
+        throw new Error(`Yetersiz kullanılabilir stok. Şu anda yalnızca ${availableStock} ${shouldShowRolls(working) ? "metre" : (working.unit || "adet")} ayırabilirsiniz.`);
+      }
+
+      const rollAllocations: Array<{ rollId: string; length: number }> = [];
+      const boxAllocations: Array<{ boxId: string; quantity: number }> = [];
+      if (shouldShowRolls(working) && working.rolls?.length) {
+        let remaining = qty;
+        for (const roll of working.rolls) {
+          const available = Math.max(0, Number(roll.length || 0) - Number(roll.reservedLength || 0));
+          const amount = roundQty(Math.min(available, remaining));
+          if (roll.status === "available" && amount > 0) {
+            roll.reservedLength = roundQty(Number(roll.reservedLength || 0) + amount);
+            rollAllocations.push({ rollId: roll.id, length: amount });
+            remaining = roundQty(remaining - amount);
+          }
+        }
+        if (remaining > 0) throw new Error(`Satışa uygun kumaş toplarında yalnızca ${roundQty(qty - remaining)} m ayrılabilir.`);
+      } else if (working.boxes?.length) {
+        let remaining = qty;
+        const orderedBoxes = selectedBoxId
+          ? working.boxes.filter(b => b.id === selectedBoxId)
+          : working.boxes;
+        for (const box of orderedBoxes) {
+          const available = Math.max(0, Number(box.quantity || 0) - Number(box.reservedQuantity || 0));
+          const amount = roundQty(Math.min(available, remaining));
+          if (box.status === "available" && amount > 0) {
+            box.reservedQuantity = roundQty(Number(box.reservedQuantity || 0) + amount);
+            boxAllocations.push({ boxId: box.id, quantity: amount });
+            remaining = roundQty(remaining - amount);
+          }
+        }
+        if (remaining > 0) throw new Error(`Satışa uygun kolilerde yalnızca ${roundQty(qty - remaining)} adet ayrılabilir.`);
+      }
+
+      working.reservedStock = roundQty(reservedStock + qty);
+      transaction.update(productRef, {
+        reservedStock: working.reservedStock,
+        ...(working.rolls ? { rolls: working.rolls } : {}),
+        ...(working.boxes ? { boxes: working.boxes } : {})
+      });
+      transaction.set(reservationRef, {
+        tenantId: context.tenantId,
+        userId: validUid,
+        productId,
+        quantity: qty,
+        unit: shouldShowRolls(working) ? "Metre" : (working.unit || "Adet"),
+        rollAllocations,
+        boxAllocations,
+        status: "active",
+        createdAt: new Date(now).toISOString(),
+        expiresAt
+      });
+      return working;
+    });
+  }
+
+  /** Releases a cart hold without reducing physical stock. */
+  async releaseStockReservation(uid: string, reservationId: string): Promise<Product | null> {
+    const validUid = assertAuthenticated(uid, "SalesRepository.releaseStockReservation");
+    const context = await this.userRepo.getOrCreateContext(validUid);
+
+    if (isDemoUser(validUid)) {
+      const reservations = getLocal<any[]>("stokpro_demo_reservations", []);
+      const reservation = reservations.find(r => r.id === reservationId);
+      if (!reservation || reservation.status !== "active") return null;
+      const products = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
+      const product = products.find(p => p.id === reservation.productId);
+      if (!product) {
+        reservation.status = "released";
+        setLocal("stokpro_demo_reservations", reservations);
+        return null;
+      }
+      product.reservedStock = roundQty(Math.max(0, Number(product.reservedStock || 0) - Number(reservation.quantity || 0)));
+      for (const allocation of reservation.rollAllocations || []) {
+        const roll = product.rolls?.find(r => r.id === allocation.rollId);
+        if (roll) roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - allocation.length));
+      }
+      for (const allocation of reservation.boxAllocations || []) {
+        const box = product.boxes?.find(b => b.id === allocation.boxId);
+        if (box) box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - allocation.quantity));
+      }
+      reservation.status = "released";
+      reservation.releasedAt = new Date().toISOString();
+      setLocal("stokpro_demo_products", products);
+      setLocal("stokpro_demo_reservations", reservations);
+      return product;
+    }
+
+    const reservationRef = doc(this.db, "stock_reservations", reservationId);
+    return runTransaction(this.db, async (transaction) => {
+      const reservationSnap = await transaction.get(reservationRef);
+      if (!reservationSnap.exists()) return null;
+      const reservation = reservationSnap.data();
+      if (reservation.tenantId !== context.tenantId || reservation.userId !== validUid || reservation.status !== "active") return null;
+      const productRef = doc(this.db, "products", reservation.productId);
+      const productSnap = await transaction.get(productRef);
+      if (!productSnap.exists()) {
+        transaction.update(reservationRef, { status: "released", releasedAt: new Date().toISOString() });
+        return null;
+      }
+      const product: Product = { id: productSnap.id, ...productSnap.data() } as Product;
+      product.reservedStock = roundQty(Math.max(0, Number(product.reservedStock || 0) - Number(reservation.quantity || 0)));
+      for (const allocation of reservation.rollAllocations || []) {
+        const roll = product.rolls?.find(r => r.id === allocation.rollId);
+        if (roll) roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - Number(allocation.length || 0)));
+      }
+      for (const allocation of reservation.boxAllocations || []) {
+        const box = product.boxes?.find(b => b.id === allocation.boxId);
+        if (box) box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - Number(allocation.quantity || 0)));
+      }
+      transaction.update(productRef, {
+        reservedStock: product.reservedStock,
+        ...(product.rolls ? { rolls: product.rolls } : {}),
+        ...(product.boxes ? { boxes: product.boxes } : {})
+      });
+      transaction.update(reservationRef, { status: "released", releasedAt: new Date().toISOString() });
+      return product;
+    });
+  }
+
+  /** Expires abandoned cart reservations after their 15-minute hold window. */
+  async cleanupExpiredReservations(uid: string): Promise<void> {
+    const validUid = assertAuthenticated(uid, "SalesRepository.cleanupExpiredReservations");
+    const context = await this.userRepo.getOrCreateContext(validUid);
+    const now = Date.now();
+    if (isDemoUser(validUid)) {
+      const reservations = getLocal<any[]>("stokpro_demo_reservations", []);
+      for (const reservation of reservations) {
+        if (reservation.status === "active" && Date.parse(reservation.expiresAt || "") <= now) {
+          await this.releaseStockReservation(validUid, reservation.id);
+          reservation.status = "expired";
+        }
+      }
+      return;
+    }
+    const snapshot = await getDocs(query(
+      collection(this.db, "stock_reservations"),
+      where("tenantId", "==", context.tenantId)
+    ));
+    const expiredIds = snapshot.docs
+      .filter(d => d.data().status === "active" && Date.parse(d.data().expiresAt || "") <= now)
+      .map(d => d.id);
+    for (const id of expiredIds) {
+      await this.releaseReservationAsExpired(validUid, id);
+    }
+  }
+
+  private async releaseReservationAsExpired(uid: string, reservationId: string): Promise<void> {
+    const validUid = assertAuthenticated(uid, "SalesRepository.releaseReservationAsExpired");
+    const context = await this.userRepo.getOrCreateContext(validUid);
+    const reservationRef = doc(this.db, "stock_reservations", reservationId);
+    await runTransaction(this.db, async (transaction) => {
+      const reservationSnap = await transaction.get(reservationRef);
+      if (!reservationSnap.exists()) return;
+      const reservation = reservationSnap.data();
+      if (reservation.tenantId !== context.tenantId || reservation.status !== "active" || Date.parse(reservation.expiresAt || "") > Date.now()) return;
+      const productRef = doc(this.db, "products", reservation.productId);
+      const productSnap = await transaction.get(productRef);
+      if (productSnap.exists()) {
+        const product: Product = { id: productSnap.id, ...productSnap.data() } as Product;
+        product.reservedStock = roundQty(Math.max(0, Number(product.reservedStock || 0) - Number(reservation.quantity || 0)));
+        for (const allocation of reservation.rollAllocations || []) {
+          const roll = product.rolls?.find(r => r.id === allocation.rollId);
+          if (roll) roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - Number(allocation.length || 0)));
+        }
+        for (const allocation of reservation.boxAllocations || []) {
+          const box = product.boxes?.find(b => b.id === allocation.boxId);
+          if (box) box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - Number(allocation.quantity || 0)));
+        }
+        transaction.update(productRef, {
+          reservedStock: product.reservedStock,
+          ...(product.rolls ? { rolls: product.rolls } : {}),
+          ...(product.boxes ? { boxes: product.boxes } : {})
+        });
+      }
+      transaction.update(reservationRef, { status: "expired", expiredAt: new Date().toISOString() });
+    });
+  }
+
+  /**
    * Listens for real-time changes to sales receipts strictly within the caller's verified tenant.
    * Enables immediate multi-device synchronization across desktops and phones.
    */
