@@ -171,7 +171,8 @@ service cloud.firestore {
     // Temporary POS cart reservations. Only members of the same tenant may
     // inspect or release holds; documents are immutable in tenant/user ownership.
     match /stock_reservations/{docId} {
-      allow get, list: if isDocOwner();
+      allow get: if isDocOwner() || (resource == null && isAuthenticated() && docId.matches("^cart_.*"));
+      allow list: if isDocOwner();
       allow create: if willBeDocOwner();
       allow update: if preservesDocOwnership() &&
         request.resource.data.tenantId == resource.data.tenantId &&
