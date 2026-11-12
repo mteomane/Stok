@@ -1032,7 +1032,7 @@ export function Inventory({
 
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <span className={`font-bold text-xs ${isLowStock ? "text-rose-600" : "text-emerald-700"}`}>
-                        {p.stock}{" "}
+                        {getAvailableStock(p)}{" "}
                         {p.unit || (p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas") ? "m" : p.packageUnitName || "ad")}
                       </span>
                       <ChevronDown
