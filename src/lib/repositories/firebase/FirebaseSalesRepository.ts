@@ -600,8 +600,8 @@ export class FirebaseSalesRepository implements SalesRepository {
           if (!box) throw new Error(`Koli bulunamadı: ID ${item.selectedBoxId}`);
           if (box.status !== "available") throw new Error(`Seçilen koli satışa uygun değil: ${box.boxNumber}`);
           const currentQty = Number(box.quantity);
-          if (currentQty < qtyToDeduct) {
-            throw new Error(`Seçilen kolide (${box.boxNumber}) yeterli adet kalmadı! Kalan: ${currentQty} (Talep edilen: ${qtyToDeduct})`);
+          if (currentQty - Number(box.reservedQuantity || 0) < qtyToDeduct) {
+            throw new Error(`Seçilen kolide (${box.boxNumber}) yeterli serbest adet kalmadı! Kalan: ${roundQty(currentQty - Number(box.reservedQuantity || 0))} (Talep edilen: ${qtyToDeduct})`);
           }
           const initQty = box.initialQuantity !== undefined ? Number(box.initialQuantity) : currentQty;
           box.initialQuantity = initQty;
@@ -1002,8 +1002,8 @@ export class FirebaseSalesRepository implements SalesRepository {
             if (!box) throw new Error(`Koli bulunamadı: ID ${item.selectedBoxId}`);
             if (box.status !== "available") throw new Error(`Seçilen koli satışa uygun değil: ${box.boxNumber}`);
             const currentQty = Number(box.quantity);
-            if (currentQty < qtyToDeduct) {
-              throw new Error(`Seçilen kolide (${box.boxNumber}) yeterli adet kalmadı! Kalan: ${currentQty} (Talep edilen: ${qtyToDeduct})`);
+            if (currentQty - Number(box.reservedQuantity || 0) < qtyToDeduct) {
+              throw new Error(`Seçilen kolide (${box.boxNumber}) yeterli serbest adet kalmadı! Kalan: ${roundQty(currentQty - Number(box.reservedQuantity || 0))} (Talep edilen: ${qtyToDeduct})`);
             }
             const initQty = box.initialQuantity !== undefined ? Number(box.initialQuantity) : currentQty;
             box.initialQuantity = initQty;
