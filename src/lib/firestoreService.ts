@@ -505,6 +505,8 @@ export interface ProcessSaleItemInput {
   quantity: number;
   selectedRollId?: string;
   cutLength?: number;
+  selectedBoxId?: string;
+  reservationId?: string;
 }
 
 export interface ProcessSaleParams {
@@ -524,6 +526,24 @@ export interface ProcessSaleParams {
  */
 export async function processSaleTransaction(uid: string, params: ProcessSaleParams): Promise<Sale> {
   return repositories.sales.processTransaction(uid, params);
+}
+
+export async function reserveStockForSale(
+  uid: string,
+  productId: string,
+  quantity: number,
+  reservationId: string,
+  selectedBoxId?: string
+): Promise<Product> {
+  return repositories.sales.reserveStock(uid, productId, quantity, reservationId, selectedBoxId);
+}
+
+export async function releaseStockReservation(uid: string, reservationId: string): Promise<Product | null> {
+  return repositories.sales.releaseStockReservation(uid, reservationId);
+}
+
+export async function cleanupExpiredStockReservations(uid: string): Promise<void> {
+  return repositories.sales.cleanupExpiredReservations(uid);
 }
 
 export async function cancelSaleAtomic(uid: string, params: CancelSaleParams): Promise<Sale> {
