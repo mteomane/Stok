@@ -186,6 +186,12 @@ export async function runProductionRepositoryTests() {
     });
     const dbA = authContextA.firestore() as unknown as Firestore;
 
+    const authContextStaffA = testEnv.authenticatedContext("usr_repo_staff_a", {
+      email: "staff_a@tekstil.com",
+      companyId: "tenant_repo_a"
+    });
+    const dbStaffA = authContextStaffA.firestore() as unknown as Firestore;
+
     const authContextB = testEnv.authenticatedContext("usr_repo_owner_b", {
       email: "owner_b@dokuma.com",
       companyId: "tenant_repo_b"
@@ -479,8 +485,8 @@ export async function runProductionRepositoryTests() {
       "İlk satıcı 10 metreyi sepete eklediğinde diğer satıcılara açık stok 61m yerine 51m görünür"
     );
 
-    const staffUserRepoA = new FirebaseUserRepository(dbA);
-    const salesRepoStaffA = new FirebaseSalesRepository(staffUserRepoA, dbA);
+    const staffUserRepoA = new FirebaseUserRepository(dbStaffA);
+    const salesRepoStaffA = new FirebaseSalesRepository(staffUserRepoA, dbStaffA);
     const staffReservationId = "cart_usr_repo_staff_a_res_001";
     setTestAuthenticatedUid("usr_repo_staff_a");
     const staffReservedProduct = await salesRepoStaffA.reserveStock("usr_repo_staff_a", reservationProduct.id, 45, staffReservationId);
