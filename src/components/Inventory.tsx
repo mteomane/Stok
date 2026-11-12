@@ -1204,7 +1204,7 @@ export function Inventory({
                           <div>
                             <span className="text-[10px] text-amber-800 font-bold uppercase tracking-wide block">Koli / Kupon Takibi</span>
                             <span className="font-bold text-amber-900">
-                              {p.boxes.length} Koli ({p.stock} Adet)
+                              {p.boxes.length} Koli ({getAvailableStock(p)} satılabilir adet)
                               {p.metersPerUnit ? ` — ${roundQty(p.stock * p.metersPerUnit)}m Eşdeğer` : ""}
                             </span>
                           </div>
@@ -1241,7 +1241,7 @@ export function Inventory({
                             <Minus className="w-3.5 h-3.5" />
                           </button>
                           <span className="px-2.5 text-xs font-bold text-slate-800 min-w-[28px] text-center">
-                            {p.stock}
+                            {getAvailableStock(p)}
                           </span>
                           <button
                             type="button"
