@@ -502,7 +502,7 @@ export async function runProductionRepositoryTests() {
     try {
       await productRepoA.update(reservationProduct.id, { rolls: unsafeRollEdit, stock: 35 }, "usr_repo_owner_a");
     } catch (err: any) {
-      manualRollReductionBlocked = String(err?.message || "").includes("aktif satış sepetlerinde ayrılmış");
+      manualRollReductionBlocked = String(err?.message || "").toLocaleLowerCase("tr-TR").includes("aktif satış sepetlerinde ayrılmış");
     }
     recordResult(manualRollReductionBlocked, "Elle düzenleme rezerve edilen metrajı top bazında da korur");
 
