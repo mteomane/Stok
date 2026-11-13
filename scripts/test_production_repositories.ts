@@ -600,7 +600,7 @@ export async function runProductionRepositoryTests() {
     recordResult(
       Boolean(groupedCatalog.length === 1 && groupedCatalog[0].name === "Premium Pamuk Kumaş" &&
         groupedCatalog[0].stock === 61 && groupedCatalog[0].rolls?.length === 3),
-      "20/18/23 örneği yerine üç fiziksel top kaydı 5+33+23 toplam 61 metre tek ürün satırında görünür"
+      "Üç fiziksel top kaydı 5+33+23 toplam 61 metre tek ürün satırında görünür"
     );
 
     const groupedReservationId = "cart_usr_repo_owner_a_grouped_001";
@@ -657,6 +657,7 @@ export async function runProductionRepositoryTests() {
     }
     recordResult(groupedOverReservationBlocked, "Gruplanmış üç top üzerinden toplam satılabilir miktarın üzerinde rezervasyon engellenir");
 
+    setTestAuthenticatedUid("usr_repo_staff_a");
     await salesRepoStaffA.releaseStockReservation(groupedStaffReservationId);
     setTestAuthenticatedUid("usr_repo_owner_a");
     const groupedBeforeSale = await Promise.all(
