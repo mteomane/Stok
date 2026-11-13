@@ -570,6 +570,8 @@ export async function runProductionRepositoryTests() {
     // -------------------------------------------------------------
     console.log("\n--- BÖLÜM 3E: Üç fiziksel kumaş topu tek ürün olarak satış ---");
     const groupedTopProducts: Product[] = [];
+    // All physical rolls belong to one explicitly selected product family.
+    const groupedTopFamilyId = "family_legacy_fabric_group_test";
     const groupedTopInputs = [
       { id: "group_roll_1", rollNumber: "Top #1", length: 5, stock: 5, sku: "GRP-FAB-001" },
       { id: "group_roll_2", rollNumber: "Top #2", length: 33, stock: 33, sku: "GRP-FAB-002" },
@@ -578,6 +580,8 @@ export async function runProductionRepositoryTests() {
     for (const top of groupedTopInputs) {
       const created = await productRepoA.create("usr_repo_owner_a", {
         name: "Premium Pamuk Kumaş - " + top.rollNumber,
+        productFamilyId: groupedTopFamilyId,
+        variantLabel: top.rollNumber,
         sku: top.sku,
         category: "Kumaş",
         unit: "Metre",
