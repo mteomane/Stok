@@ -184,6 +184,11 @@ export function QuickProductModal({
       return;
     }
 
+    if (selectedFamilyId && !variantLabel.trim()) {
+      setFormError("Lütfen alt varyant / kırılım adını girin.");
+      return;
+    }
+
     // A child variant must use the same stock unit as its parent family.
     if (selectedFamily && (selectedFamily.unit || "Adet").trim().toLocaleLowerCase("tr-TR") !== (unit || "Adet").trim().toLocaleLowerCase("tr-TR")) {
       setFormError("Seçtiğiniz ana ürünün takip birimi '" + (selectedFamily.unit || "Adet") + "'. Alt varyantta da aynı birimi seçin.");
