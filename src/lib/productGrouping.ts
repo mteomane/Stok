@@ -4,6 +4,10 @@ import { getAvailableStock, getAvailableRollLength, shouldShowRolls } from "./se
 const normalize = (value: unknown): string =>
   String(value ?? "").normalize("NFKC").toLocaleLowerCase("tr-TR").replace(/\s+/g, " ").trim();
 
+function displayFabricName(name: string): string {
+  return String(name || "").replace(/[\\s\\-_–—]*(?:\\(|\\[)?\\s*(?:top|rulo|roll)\\s*(?:no\\.?|#)?\\s*[a-z0-9._-]+\\s*(?:\\)|\\])?$/i, "").trim() || name;
+}
+
 function baseFabricName(name: string): string {
   return normalize(name)
     .replace(/[\s\-_–—]*(?:\(|\[)?\s*(?:top|rulo|roll)\s*(?:no\.?|#)?\s*[a-z0-9._-]+\s*(?:\)|\])?$/i, "")
@@ -111,6 +115,7 @@ export function groupFabricProducts(products: Product[]): Product[] {
 
     grouped.push({
       ...representative,
+      name: displayFabricName(representative.name),
       stock: totalStock,
       reservedStock: totalReserved,
       minStock: Math.max(...members.map((member) => Number(member.minStock || 0))),
