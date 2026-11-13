@@ -5,7 +5,7 @@ const normalize = (value: unknown): string =>
   String(value ?? "").normalize("NFKC").toLocaleLowerCase("tr-TR").replace(/\s+/g, " ").trim();
 
 function displayFabricName(name: string): string {
-  return String(name || "").replace(/[\\s\\-_–—]*(?:\\(|\\[)?\\s*(?:top|rulo|roll)\\s*(?:no\\.?|#)?\\s*[a-z0-9._-]+\\s*(?:\\)|\\])?$/i, "").trim() || name;
+  return String(name || "").replace(/[\s\-_–—]*(?:\(|\[)?\s*(?:top|rulo|roll)\s*(?:no\.?|#)?\s*[a-z0-9._-]+\s*(?:\)|\])?$/i, "").trim() || name;
 }
 
 function baseFabricName(name: string): string {
