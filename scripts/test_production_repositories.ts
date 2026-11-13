@@ -712,6 +712,55 @@ export async function runProductionRepositoryTests() {
       "Gruplanmış satış iptal edilince 10 metre doğru fiziksel toplara geri iade edilir"
     );
 
+    // -------------------------------------------------------------
+    // SENARYO 3F: GENEL ÜRÜN VARYANTLARINDA GRUPLU STOK REZERVASYONU VE SATIŞ
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3F: Genel ürün varyantlarında aile stoğu ve satış ---");
+    const shoeFamilyId = "family_shoe_group_repo_test";
+    const shoeVariants: Product[] = [];
+    for (const variant of [
+      { id: "shoe_variant_black_40", label: "Siyah / 40", stock: 4, sku: "SHOE-BLK-40" },
+      { id: "shoe_variant_black_41", label: "Siyah / 41", stock: 6, sku: "SHOE-BLK-41" }
+    ]) {
+      const created = await productRepoA.create("usr_repo_owner_a", {
+        name: "Koşu Ayakkabısı", productFamilyId: shoeFamilyId, variantLabel: variant.label,
+        sku: variant.sku, category: "Ayakkabı", unit: "Adet", price: 1200,
+        stock: variant.stock, minStock: 0, attributes: { Varyant: variant.label }
+      });
+      shoeVariants.push(created);
+    }
+    const groupedShoesForSale = groupProducts(shoeVariants);
+    recordResult(
+      Boolean(groupedShoesForSale.length === 1 && groupedShoesForSale[0].stock === 10 && groupedShoesForSale[0].groupMembers?.length === 2),
+      "Ayakkabının iki numara varyantı tek ana ürün ve toplam 10 adet stok olarak görünür"
+    );
+    const shoeReservationId = "cart_usr_repo_owner_a_shoes_grouped_001";
+    setTestAuthenticatedUid("usr_repo_owner_a");
+    await salesRepoA.reserveStock("usr_repo_owner_a", groupedShoesForSale[0].id, 7, shoeReservationId, undefined, groupedShoesForSale[0].groupProductIds);
+    const shoesAfterHold = await Promise.all(shoeVariants.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a")));
+    const shoesAfterHoldView = groupProducts(shoesAfterHold.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(shoesAfterHoldView.length === 1 && getGroupedAvailableStock(shoesAfterHoldView[0]) === 3),
+      "Sepette 7 ayakkabı rezerve edilince ailede yalnızca 3 adet satışa açık kalır"
+    );
+    const shoeSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{ productId: groupedShoesForSale[0].id, quantity: 7, reservationId: shoeReservationId, productIds: groupedShoesForSale[0].groupProductIds }],
+      amountPaid: 0, idempotencyKey: "grouped_shoe_sale_001"
+    });
+    const shoesAfterSale = await Promise.all(shoeVariants.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a")));
+    const shoesAfterSaleView = groupProducts(shoesAfterSale.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(shoeSale.stockDeducted === true && shoesAfterSaleView.length === 1 && shoesAfterSaleView[0].stock === 3),
+      "Varyant ailesinden 7 adet satışta toplam fiziksel stok 3 adede iner"
+    );
+    const shoeSaleCancel = await salesRepoA.cancelSale(shoeSale.id, "usr_repo_owner_a", "Ayakkabı grup satış iptali", "grouped_shoe_cancel_001");
+    const shoesAfterCancel = await Promise.all(shoeVariants.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a")));
+    const shoesAfterCancelView = groupProducts(shoesAfterCancel.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(shoeSaleCancel.stockRestored === true && shoesAfterCancelView.length === 1 && shoesAfterCancelView[0].stock === 10),
+      "Grup satış iptalinde ayakkabı varyantlarının toplam stoğu 10 adede geri döner"
+    );
+
     // SENARYO 4: SİPARİŞ OLUŞTURMA VE ATOMİK İPTAL İLE METRAJ İADESİ
     // -------------------------------------------------------------
     console.log("\n--- BÖLÜM 4: FirebaseOrderRepository (createAtomic & cancelOrderAtomic) ---");
