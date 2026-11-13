@@ -54,6 +54,7 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
   const groupedProducts = React.useMemo(() => groupFabricProducts(products), [products]);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [expandedFamilyId, setExpandedFamilyId] = useState<string | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [error, setError] = useState<string | null>(null);
@@ -809,7 +810,13 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
                 return (
                   <div
                     key={p.id}
-                    onClick={() => selectProductToConfigure(p)}
+                    onClick={() => {
+                      if (p.groupMembers && p.groupMembers.length > 1) {
+                        setExpandedFamilyId((current) => current === p.id ? null : p.id);
+                      } else {
+                        selectProductToConfigure(p);
+                      }
+                    }}
                     className="bg-white p-3 rounded-xl border border-slate-200 hover:border-indigo-400 hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group active:scale-98 select-none"
                   >
                     <div>
@@ -844,6 +851,34 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
                         <span className="text-[10px] text-slate-400 font-mono block mt-0.5 truncate">
                           {p.sku}
                         </span>
+                      )}
+                      {p.groupMembers && p.groupMembers.length > 1 && (
+                        <div className="mt-2 space-y-1" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedFamilyId((current) => current === p.id ? null : p.id)}
+                            className="w-full text-left text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 rounded-lg px-2 py-1.5"
+                          >
+                            {expandedFamilyId === p.id ? "Varyantları gizle" : "Varyant seç (" + p.groupMembers.length + ")"}
+                          </button>
+                          {expandedFamilyId === p.id && p.groupMembers.map((variant) => (
+                            <button
+                              key={variant.id}
+                              type="button"
+                              onClick={() => selectProductToConfigure(variant)}
+                              className="w-full flex items-center justify-between gap-2 text-left bg-white border border-slate-200 hover:border-indigo-400 rounded-lg px-2 py-2"
+                            >
+                              <span className="min-w-0">
+                                <span className="block text-[10px] font-bold text-slate-700 truncate">{variant.variantLabel || variant.name}</span>
+                                <span className="block text-[9px] text-slate-400 font-mono truncate">{variant.sku || variant.barcode || "Stok kodu yok"}</span>
+                              </span>
+                              <span className="shrink-0 text-right">
+                                <span className="block text-[10px] font-black text-slate-800">{formatCurrency(variant.price)}</span>
+                                <span className="block text-[9px] text-emerald-600">{getAvailableStock(variant)} {variant.unit || "Adet"}</span>
+                              </span>
+                            </button>
+                          ))}
+                        </div>
                       )}
                     </div>
 
