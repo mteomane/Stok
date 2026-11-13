@@ -34,7 +34,7 @@ import { setTestAuthenticatedUid } from "../src/lib/authGuard";
 import { memoryCache } from "../src/lib/cache";
 import { roundQty, round2 } from "../src/lib/repositories/firebase/helpers";
 import { getAvailableStock } from "../src/lib/sectorConfig";
-import { groupFabricProducts, getGroupedAvailableStock } from "../src/lib/productGrouping";
+import { groupFabricProducts, groupProducts, getGroupedAvailableStock } from "../src/lib/productGrouping";
 
 const EMULATOR_HOST = "127.0.0.1";
 const EMULATOR_PORT = 8088;
