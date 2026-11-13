@@ -34,6 +34,7 @@ import { setTestAuthenticatedUid } from "../src/lib/authGuard";
 import { memoryCache } from "../src/lib/cache";
 import { roundQty, round2 } from "../src/lib/repositories/firebase/helpers";
 import { getAvailableStock } from "../src/lib/sectorConfig";
+import { groupFabricProducts, getGroupedAvailableStock } from "../src/lib/productGrouping";
 
 const EMULATOR_HOST = "127.0.0.1";
 const EMULATOR_PORT = 8088;
@@ -562,6 +563,148 @@ export async function runProductionRepositoryTests() {
     recordResult(
       Boolean(afterReservationCancel && reservationSaleCancel.stockRestored === true && afterReservationCancel.stock === 61 && getAvailableStock(afterReservationCancel) === 61),
       "Satış iptalinde rezerve edilmiş metraj doğru kumaş toplarına geri yüklenir"
+    );
+
+    // -------------------------------------------------------------
+    // SENARYO 3E: AYRI TOP ÜRÜNLERİN GRUPLANMASI VE GRUP ÜZERİNDEN SATIŞ
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3E: Üç fiziksel kumaş topu tek ürün olarak satış ---");
+    const groupedTopProducts: Product[] = [];
+    const groupedTopInputs = [
+      { id: "group_roll_1", rollNumber: "Top #1", length: 5, stock: 5, sku: "GRP-FAB-001" },
+      { id: "group_roll_2", rollNumber: "Top #2", length: 33, stock: 33, sku: "GRP-FAB-002" },
+      { id: "group_roll_3", rollNumber: "Top #3", length: 23, stock: 23, sku: "GRP-FAB-003" }
+    ];
+    for (const top of groupedTopInputs) {
+      const created = await productRepoA.create("usr_repo_owner_a", {
+        name: "Premium Pamuk Kumaş - " + top.rollNumber,
+        sku: top.sku,
+        category: "Kumaş",
+        unit: "Metre",
+        price: 250,
+        stock: top.stock,
+        minStock: 0,
+        metadata: { fabricType: "Pamuk", color: "Mavi", width: "150cm", rollNumber: top.rollNumber },
+        rolls: [{
+          id: top.id,
+          rollNumber: top.rollNumber,
+          length: top.length,
+          initialLength: top.length,
+          status: "available"
+        }]
+      });
+      groupedTopProducts.push(created);
+    }
+
+    const groupedCatalog = groupFabricProducts(groupedTopProducts);
+    recordResult(
+      Boolean(groupedCatalog.length === 1 && groupedCatalog[0].name === "Premium Pamuk Kumaş" &&
+        groupedCatalog[0].stock === 61 && groupedCatalog[0].rolls?.length === 3),
+      "20/18/23 örneği yerine üç fiziksel top kaydı 5+33+23 toplam 61 metre tek ürün satırında görünür"
+    );
+
+    const groupedReservationId = "cart_usr_repo_owner_a_grouped_001";
+    setTestAuthenticatedUid("usr_repo_owner_a");
+    await salesRepoA.reserveStock(
+      "usr_repo_owner_a",
+      groupedCatalog[0].id,
+      10,
+      groupedReservationId,
+      undefined,
+      groupedCatalog[0].groupProductIds
+    );
+    const groupedAfterOwnerHold = await Promise.all(
+      groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    const groupedAfterOwnerHoldList = groupedAfterOwnerHold.filter((product): product is Product => Boolean(product));
+    const groupedAfterOwnerHoldView = groupFabricProducts(groupedAfterOwnerHoldList);
+    recordResult(
+      Boolean(groupedAfterOwnerHoldView.length === 1 && getGroupedAvailableStock(groupedAfterOwnerHoldView[0]) === 51),
+      "Birinci satıcı gruptan 10 metre ayırınca tüm satıcılar toplam 51 metre görür"
+    );
+
+    const groupedStaffReservationId = "cart_usr_repo_staff_a_grouped_001";
+    setTestAuthenticatedUid("usr_repo_staff_a");
+    await salesRepoStaffA.reserveStock(
+      "usr_repo_staff_a",
+      groupedCatalog[0].id,
+      45,
+      groupedStaffReservationId,
+      undefined,
+      groupedCatalog[0].groupProductIds
+    );
+    const groupedAfterStaffHold = await Promise.all(
+      groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    const groupedAfterStaffView = groupFabricProducts(groupedAfterStaffHold.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(groupedAfterStaffView.length === 1 && getGroupedAvailableStock(groupedAfterStaffView[0]) === 6),
+      "İkinci satıcı aynı üç top üzerinden kalan miktarın yalnızca 45 metresini ayırabilir"
+    );
+
+    let groupedOverReservationBlocked = false;
+    try {
+      await salesRepoStaffA.reserveStock(
+        "usr_repo_staff_a",
+        groupedCatalog[0].id,
+        7,
+        "cart_usr_repo_staff_a_grouped_over",
+        undefined,
+        groupedCatalog[0].groupProductIds
+      );
+    } catch (err: any) {
+      groupedOverReservationBlocked = String(err?.message || "").includes("Yetersiz kullanılabilir kumaş");
+    }
+    recordResult(groupedOverReservationBlocked, "Gruplanmış üç top üzerinden toplam satılabilir miktarın üzerinde rezervasyon engellenir");
+
+    await salesRepoStaffA.releaseStockReservation(groupedStaffReservationId);
+    setTestAuthenticatedUid("usr_repo_owner_a");
+    const groupedBeforeSale = await Promise.all(
+      groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    const groupedBeforeSaleView = groupFabricProducts(groupedBeforeSale.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(groupedBeforeSaleView.length === 1 && getGroupedAvailableStock(groupedBeforeSaleView[0]) === 51),
+      "İkinci satıcının sepeti boşaltılınca 45 metre grupta yeniden satışa açılır"
+    );
+
+    const groupedSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{
+        productId: groupedCatalog[0].id,
+        quantity: 10,
+        cutLength: 10,
+        reservationId: groupedReservationId,
+        productIds: groupedCatalog[0].groupProductIds
+      }],
+      amountPaid: 0,
+      idempotencyKey: "grouped_fabric_sale_001"
+    });
+    const groupedAfterSale = await Promise.all(
+      groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    const groupedAfterSaleView = groupFabricProducts(groupedAfterSale.filter((product): product is Product => Boolean(product)));
+    const groupedSaleAllocations = (groupedSale.items[0] as any)?.productAllocations || [];
+    recordResult(
+      Boolean(groupedAfterSaleView.length === 1 && getGroupedAvailableStock(groupedAfterSaleView[0]) === 51 &&
+        groupedSale.stockDeducted === true && groupedSaleAllocations.length === 2),
+      "Tek ürün satışı 10 metreyi iki fiziksel topa doğru dağıtır ve toplam stok 51 metrede kalır"
+    );
+
+    const groupedSaleCancel = await salesRepoA.cancelSale(
+      groupedSale.id,
+      "usr_repo_owner_a",
+      "Gruplanmış kumaş satış iadesi",
+      "grouped_fabric_cancel_001"
+    );
+    const groupedAfterCancel = await Promise.all(
+      groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    const groupedAfterCancelView = groupFabricProducts(groupedAfterCancel.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(groupedSaleCancel.stockRestored === true && groupedAfterCancelView.length === 1 &&
+        getGroupedAvailableStock(groupedAfterCancelView[0]) === 61 &&
+        groupedAfterCancelView[0].rolls?.reduce((sum, roll) => sum + Number(roll.length || 0), 0) === 61),
+      "Gruplanmış satış iptal edilince 10 metre doğru fiziksel toplara geri iade edilir"
     );
 
     // SENARYO 4: SİPARİŞ OLUŞTURMA VE ATOMİK İPTAL İLE METRAJ İADESİ
