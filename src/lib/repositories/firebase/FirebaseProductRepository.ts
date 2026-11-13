@@ -372,6 +372,9 @@ export class FirebaseProductRepository implements ProductRepository {
       metadata: synced.metadata,
       attributes: synced.attributes,
       unit: product.unit || "Adet",
+      // Every newly created product starts in its own universal family.
+      // A later variant can explicitly join this family via productFamilyId.
+      productFamilyId: product.productFamilyId || ("family_" + Math.random().toString(36).slice(2, 12)),
       tenantId: context.tenantId,
       isActive: true
     };
