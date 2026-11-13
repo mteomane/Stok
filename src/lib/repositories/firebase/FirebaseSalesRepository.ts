@@ -481,31 +481,43 @@ export class FirebaseSalesRepository implements SalesRepository {
     const validUid = assertAuthenticated(uid, "SalesRepository.releaseStockReservation");
     const context = await this.userRepo.getOrCreateContext(validUid);
 
+    const applyRelease = (product: Product, allocation: any) => {
+      product.reservedStock = roundQty(Math.max(0, Number(product.reservedStock || 0) - Number(allocation.quantity || 0)));
+      for (const item of allocation.rollAllocations || []) {
+        const roll = product.rolls?.find((entry) => entry.id === item.rollId);
+        if (roll) roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - Number(item.length || 0)));
+      }
+      for (const item of allocation.boxAllocations || []) {
+        const box = product.boxes?.find((entry) => entry.id === item.boxId);
+        if (box) box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - Number(item.quantity || 0)));
+      }
+    };
+
     if (isDemoUser(validUid)) {
       const reservations = getLocal<any[]>("stokpro_demo_reservations", []);
-      const reservation = reservations.find(r => r.id === reservationId);
-      if (!reservation || reservation.status !== "active") return null;
+      const reservation = reservations.find((entry) => entry.id === reservationId);
+      if (!reservation || reservation.status !== "active" || reservation.tenantId !== context.tenantId || reservation.userId !== validUid) return null;
       const products = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
-      const product = products.find(p => p.id === reservation.productId);
-      if (!product) {
-        reservation.status = "released";
-        setLocal("stokpro_demo_reservations", reservations);
-        return null;
-      }
-      product.reservedStock = roundQty(Math.max(0, Number(product.reservedStock || 0) - Number(reservation.quantity || 0)));
-      for (const allocation of reservation.rollAllocations || []) {
-        const roll = product.rolls?.find(r => r.id === allocation.rollId);
-        if (roll) roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - allocation.length));
-      }
-      for (const allocation of reservation.boxAllocations || []) {
-        const box = product.boxes?.find(b => b.id === allocation.boxId);
-        if (box) box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - allocation.quantity));
+      const working = new Map<string, Product>();
+      const allocations = reservation.productAllocations || [{
+        productId: reservation.productId,
+        quantity: reservation.quantity,
+        rollAllocations: reservation.rollAllocations || [],
+        boxAllocations: reservation.boxAllocations || []
+      }];
+      for (const allocation of allocations) {
+        const source = products.find((entry) => entry.id === allocation.productId);
+        if (!source) continue;
+        const product = JSON.parse(JSON.stringify(source)) as Product;
+        applyRelease(product, allocation);
+        working.set(product.id, product);
       }
       reservation.status = "released";
       reservation.releasedAt = new Date().toISOString();
-      setLocal("stokpro_demo_products", products);
+      setLocal("stokpro_demo_products", products.map((product) => working.get(product.id) || product));
       setLocal("stokpro_demo_reservations", reservations);
-      return product;
+      memoryCache.invalidate("products_");
+      return working.get(reservation.productId) || null;
     }
 
     const reservationRef = doc(this.db, "stock_reservations", reservationId);
@@ -514,29 +526,37 @@ export class FirebaseSalesRepository implements SalesRepository {
       if (!reservationSnap.exists()) return null;
       const reservation = reservationSnap.data();
       if (reservation.tenantId !== context.tenantId || reservation.userId !== validUid || reservation.status !== "active") return null;
-      const productRef = doc(this.db, "products", reservation.productId);
-      const productSnap = await transaction.get(productRef);
-      if (!productSnap.exists()) {
-        transaction.update(reservationRef, { status: "released", releasedAt: new Date().toISOString() });
-        return null;
+
+      const allocations = reservation.productAllocations || [{
+        productId: reservation.productId,
+        quantity: reservation.quantity,
+        rollAllocations: reservation.rollAllocations || [],
+        boxAllocations: reservation.boxAllocations || []
+      }];
+      const products = new Map<string, Product>();
+      const refs = new Map<string, any>();
+      for (const allocation of allocations) {
+        if (products.has(allocation.productId)) continue;
+        const ref = doc(this.db, "products", allocation.productId);
+        const snap = await transaction.get(ref);
+        if (snap.exists()) {
+          refs.set(allocation.productId, ref);
+          products.set(allocation.productId, { id: snap.id, ...snap.data() } as Product);
+        }
       }
-      const product: Product = { id: productSnap.id, ...productSnap.data() } as Product;
-      product.reservedStock = roundQty(Math.max(0, Number(product.reservedStock || 0) - Number(reservation.quantity || 0)));
-      for (const allocation of reservation.rollAllocations || []) {
-        const roll = product.rolls?.find(r => r.id === allocation.rollId);
-        if (roll) roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - Number(allocation.length || 0)));
+      for (const allocation of allocations) {
+        const product = products.get(allocation.productId);
+        if (product) applyRelease(product, allocation);
       }
-      for (const allocation of reservation.boxAllocations || []) {
-        const box = product.boxes?.find(b => b.id === allocation.boxId);
-        if (box) box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - Number(allocation.quantity || 0)));
+      for (const [id, product] of products.entries()) {
+        transaction.update(refs.get(id), {
+          reservedStock: Number(product.reservedStock || 0),
+          ...(product.rolls ? { rolls: product.rolls } : {}),
+          ...(product.boxes ? { boxes: product.boxes } : {})
+        });
       }
-      transaction.update(productRef, {
-        reservedStock: product.reservedStock,
-        ...(product.rolls ? { rolls: product.rolls } : {}),
-        ...(product.boxes ? { boxes: product.boxes } : {})
-      });
       transaction.update(reservationRef, { status: "released", releasedAt: new Date().toISOString() });
-      return product;
+      return products.get(reservation.productId) || null;
     });
   }
 
