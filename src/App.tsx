@@ -342,11 +342,12 @@ export default function App() {
     productId: string,
     quantity: number,
     reservationId: string,
-    selectedBoxId?: string
+    selectedBoxId?: string,
+    groupProductIds?: string[]
   ) => {
     const uid = user?.uid || auth.currentUser?.uid;
     if (!uid) throw new Error("Oturum açık değil.");
-    const updatedProduct = await reserveStockForSale(uid, productId, quantity, reservationId, selectedBoxId);
+    const updatedProduct = await reserveStockForSale(uid, productId, quantity, reservationId, selectedBoxId, groupProductIds);
     setProducts((prev) => prev.map((p) => p.id === productId ? { ...p, ...updatedProduct } : p));
     return updatedProduct;
   };
