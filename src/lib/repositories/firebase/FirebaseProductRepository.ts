@@ -579,6 +579,8 @@ export class FirebaseProductRepository implements ProductRepository {
     let normalizedUpdates = { ...updates };
     // Cart reservation counters are repository-managed and must never be overwritten by ordinary product edits.
     delete (normalizedUpdates as any).reservedStock;
+    delete (normalizedUpdates as any).groupProductIds;
+    delete (normalizedUpdates as any).groupMembers;
     if (updates.metadata || updates.attributes) {
       const synced = syncSectorMetadata({
         metadata: updates.metadata,
