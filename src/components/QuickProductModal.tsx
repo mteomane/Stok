@@ -54,6 +54,8 @@ export function QuickProductModal({
   const [stock, setStock] = useState("10");
   const [minStock, setMinStock] = useState("5");
   const [unit, setUnit] = useState("Adet");
+  const [selectedFamilyId, setSelectedFamilyId] = useState("");
+  const [variantLabel, setVariantLabel] = useState("");
 
   // Dynamic Sector Settings
   const [sectorSettings, setSectorSettings] = useState<SectorSettings | null>(null);
@@ -96,6 +98,22 @@ export function QuickProductModal({
       )
     ) || null;
   }, [barcode, existingProducts]);
+
+  // Existing explicit product families. Same-name products are deliberately never merged.
+  const availableFamilies = useMemo(() => {
+    const byFamily = new Map<string, Product>();
+    existingProducts.filter((product) => product.isActive !== false && product.productFamilyId).forEach((product) => {
+      const familyId = String(product.productFamilyId);
+      if (!byFamily.has(familyId)) byFamily.set(familyId, product);
+    });
+    return Array.from(byFamily.entries()).map(([id, product]) => ({ id, product }))
+      .sort((a, b) => a.product.name.localeCompare(b.product.name, "tr"));
+  }, [existingProducts]);
+
+  const selectedFamily = useMemo(
+    () => availableFamilies.find((family) => family.id === selectedFamilyId)?.product || null,
+    [availableFamilies, selectedFamilyId]
+  );
 
   // Existing categories for quick suggestions
   const existingCategories = useMemo(() => {
@@ -166,6 +184,12 @@ export function QuickProductModal({
       return;
     }
 
+    // A child variant must use the same stock unit as its parent family.
+    if (selectedFamily && (selectedFamily.unit || "Adet").trim().toLocaleLowerCase("tr-TR") !== (unit || "Adet").trim().toLocaleLowerCase("tr-TR")) {
+      setFormError("Seçtiğiniz ana ürünün takip birimi '" + (selectedFamily.unit || "Adet") + "'. Alt varyantta da aynı birimi seçin.");
+      return;
+    }
+
     // Check conflict
     if (conflictingProduct) {
       setFormError(`Bu barkod (${barcode.trim()}) zaten '${conflictingProduct.name}' ürününde kayıtlı! Mükerrer ürün oluşturulamaz.`);
@@ -176,7 +200,9 @@ export function QuickProductModal({
       setIsSubmitting(true);
       const autoSku = sku.trim() || ("PRD-" + Math.random().toString(36).substring(2, 8).toUpperCase());
       const productPayload: Omit<Product, "id"> = {
-        name: cleanName,
+        name: selectedFamily ? selectedFamily.name : cleanName,
+        productFamilyId: selectedFamilyId || undefined,
+        variantLabel: selectedFamilyId ? (variantLabel.trim() || cleanName) : undefined,
         sku: autoSku,
         category: category.trim() || "Genel",
         unit: unit.trim() || "Adet",
@@ -310,6 +336,45 @@ export function QuickProductModal({
               placeholder="Örn: Pepsi 330ml Kutu, Pamuk Poplin Kumaş, Fren Balatası..."
               className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-slate-50 focus:bg-white transition-all"
             />
+          </div>
+
+          {/* Universal product family / variant selection */}
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3 space-y-2">
+            <label className="text-xs font-bold text-slate-700 block">Ürün yapısı</label>
+            <select
+              value={selectedFamilyId}
+              onChange={(e) => {
+                const nextId = e.target.value;
+                setSelectedFamilyId(nextId);
+                const family = availableFamilies.find((item) => item.id === nextId)?.product;
+                if (family) {
+                  setName(family.name);
+                  setUnit(family.unit || "Adet");
+                  setCategory(family.category || "Genel");
+                }
+              }}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">Yeni ana ürün oluştur</option>
+              {availableFamilies.map((family) => (
+                <option key={family.id} value={family.id}>{family.product.name} · {family.product.category || "Genel"} · {family.product.unit || "Adet"}</option>
+              ))}
+            </select>
+            {selectedFamilyId ? (
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 block mb-1">Alt varyant / kırılım adı *</label>
+                <input
+                  type="text"
+                  value={variantLabel}
+                  onChange={(e) => setVariantLabel(e.target.value)}
+                  placeholder="Örn: Siyah / 42 numara, 256 GB, Parti 02..."
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <p className="text-[10px] text-indigo-700 mt-1">Bu kayıt seçtiğiniz ana ürünün altında gösterilir; barkod, fiyat ve stok ayrı tutulur.</p>
+              </div>
+            ) : (
+              <p className="text-[10px] text-slate-500">Yeni ürün ayrı bir ana ürün olarak kaydedilir. Aynı isimli ürünler kendiliğinden birleştirilmez.</p>
+            )}
           </div>
 
           {/* 2. Barcode & Auto Generate */}
