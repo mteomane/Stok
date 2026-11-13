@@ -658,7 +658,7 @@ export async function runProductionRepositoryTests() {
     recordResult(groupedOverReservationBlocked, "Gruplanmış üç top üzerinden toplam satılabilir miktarın üzerinde rezervasyon engellenir");
 
     setTestAuthenticatedUid("usr_repo_staff_a");
-    await salesRepoStaffA.releaseStockReservation(groupedStaffReservationId);
+    await salesRepoStaffA.releaseStockReservation("usr_repo_staff_a", groupedStaffReservationId);
     setTestAuthenticatedUid("usr_repo_owner_a");
     const groupedBeforeSale = await Promise.all(
       groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
