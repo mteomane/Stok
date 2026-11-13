@@ -298,7 +298,60 @@ export function Inventory({
     }
 
     const currentRolls = selectedRollProduct.rolls || [];
-    const rollNum = newRollNumber.trim() || `Top #${currentRolls.length + 1}`;
+    const rollNum = newRollNumber.trim() || ("Top #" + (currentRolls.length + 1));
+
+    if (selectedRollProduct.groupProductIds && selectedRollProduct.groupMembers?.length) {
+      const source = selectedRollProduct.groupMembers[0];
+      const newRoll: FabricRoll = {
+        id: "R-" + Math.random().toString(36).substring(2, 8).toUpperCase(),
+        rollNumber: rollNum,
+        length: len,
+        initialLength: len,
+        soldLength: 0,
+        colorCode: newRollColorCode.trim() || undefined,
+        colorName: newRollColorName.trim() || undefined,
+        supplier: newRollSupplier.trim() || undefined,
+        entryDate: new Date().toISOString().split("T")[0],
+        status: "available",
+        createdAt: new Date().toISOString()
+      };
+      const metadata = {
+        ...(source.metadata || {}),
+        rollNumber: rollNum,
+        length: len,
+        ...(newRollColorCode.trim() ? { colorCode: newRollColorCode.trim() } : {}),
+        ...(newRollColorName.trim() ? { colorName: newRollColorName.trim(), color: newRollColorName.trim() } : {})
+      };
+      const attributes = {
+        ...(source.attributes || {}),
+        "Rulo No": rollNum
+      };
+      try {
+        await onAddProduct({
+          name: source.name,
+          sku: "",
+          category: source.category,
+          unit: source.unit || "Metre",
+          price: source.price,
+          costPrice: source.costPrice,
+          stock: len,
+          minStock: source.minStock,
+          brand: source.brand,
+          attributes,
+          metadata: { ...metadata, fabricType: source.metadata?.fabricType },
+          rolls: [newRoll]
+        });
+        setNewRollNumber("");
+        setNewRollLength("");
+        setNewRollColorCode("");
+        setNewRollColorName("");
+        setNewRollSupplier("");
+        if (onRefreshData) await onRefreshData();
+      } catch (err: any) {
+        alert("Yeni top eklenemedi: " + (err?.message || "Hata"));
+      }
+      return;
+    }
     
     const newRoll: FabricRoll = {
       id: "R-" + Math.random().toString(36).substring(2, 8).toUpperCase(),
@@ -358,6 +411,43 @@ export function Inventory({
       return;
     }
 
+    if (selectedRollProduct.groupProductIds && targetRoll.productId) {
+      const source = products.find((entry) => entry.id === targetRoll.productId);
+      if (!source) {
+        alert("Düzenlenecek fiziksel top kaydı bulunamadı.");
+        return;
+      }
+      try {
+        if (String(targetRoll.id).startsWith("product-roll:")) {
+          await onUpdateProduct(source.id, {
+            stock: newLen,
+            metadata: { ...(source.metadata || {}), rollNumber: editingRollNumber.trim() || targetRoll.rollNumber },
+            attributes: { ...(source.attributes || {}), "Rulo No": editingRollNumber.trim() || targetRoll.rollNumber }
+          });
+        } else {
+          const originalRollId = String(targetRoll.id).slice((source.id + "::").length);
+          const sourceRolls = source.rolls || [];
+          const nextSourceRolls = sourceRolls.map((roll) => roll.id === originalRollId ? {
+            ...roll,
+            rollNumber: editingRollNumber.trim() || roll.rollNumber,
+            length: newLen,
+            initialLength: roll.initialLength !== undefined ? Number(roll.initialLength) : Math.max(Number(roll.length), newLen),
+            soldLength: round2(Math.max(0, Number(roll.initialLength ?? roll.length) - newLen)),
+            status: newLen <= 0 ? "sold" as const : (editingRollStatus === "sold" ? "available" as const : editingRollStatus)
+          } : roll);
+          await onUpdateProduct(source.id, {
+            rolls: nextSourceRolls,
+            stock: round2(nextSourceRolls.reduce((sum, roll) => sum + Number(roll.length || 0), 0))
+          });
+        }
+        setEditingRollId(null);
+        if (onRefreshData) await onRefreshData();
+      } catch (err: any) {
+        alert("Top güncellenemedi: " + (err?.message || "Hata"));
+      }
+      return;
+    }
+
     const updatedRolls = (selectedRollProduct.rolls || []).map((r) => {
       if (r.id === rollId) {
         const initLen = r.initialLength !== undefined ? Number(r.initialLength) : Math.max(Number(r.length), newLen);
@@ -403,6 +493,27 @@ export function Inventory({
       return;
     }
     if (!confirm("Bu kumaş topunu silmek istediğinize emin misiniz? Bu işlem toplam stok miktarını güncelleyecektir.")) return;
+
+    if (selectedRollProduct.groupProductIds && targetRoll.productId) {
+      const source = products.find((entry) => entry.id === targetRoll.productId);
+      if (!source) return;
+      try {
+        if (String(targetRoll.id).startsWith("product-roll:")) {
+          await onDeleteProduct(source.id);
+        } else {
+          const originalRollId = String(targetRoll.id).slice((source.id + "::").length);
+          const nextSourceRolls = (source.rolls || []).filter((roll) => roll.id !== originalRollId);
+          await onUpdateProduct(source.id, {
+            rolls: nextSourceRolls,
+            stock: round2(nextSourceRolls.reduce((sum, roll) => sum + Number(roll.length || 0), 0))
+          });
+        }
+        if (onRefreshData) await onRefreshData();
+      } catch (err: any) {
+        alert("Top silinemedi: " + (err?.message || "Hata"));
+      }
+      return;
+    }
 
     const updatedRolls = (selectedRollProduct.rolls || []).filter((r) => r.id !== rollId);
     const newTotalStock = round2(updatedRolls.reduce((sum, r) => sum + (Number(r.length) || 0), 0));
@@ -591,7 +702,7 @@ export function Inventory({
 
   const adjustStock = async (productId: string, currentStock: number, adjustment: number) => {
     const product = products.find((p) => p.id === productId);
-    const newStock = roundQty(Math.max(0, currentStock + adjustment));
+    const newStock = roundQty(Math.max(0, Number(product?.stock || 0) + adjustment));
     if (newStock < Number(product?.reservedStock || 0)) {
       alert("Bu ürünün bir kısmı satış sepetlerinde ayrılmış. Ayrılmış miktarın altına stok düşürülemez.");
       return;
@@ -1307,7 +1418,7 @@ export function Inventory({
 
                         <button
                           type="button"
-                          onClick={() => setEditingProduct(p)}
+                          onClick={() => setEditingProduct(products.find((member) => member.id === p.id) || p)}
                           title="Ürünü Düzenle"
                           className="px-2.5 py-1.5 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-slate-600 hover:text-indigo-600 font-bold text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
                         >
