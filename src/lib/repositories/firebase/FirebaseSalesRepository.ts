@@ -127,8 +127,8 @@ export class FirebaseSalesRepository implements SalesRepository {
         .map((id) => working.get(id))
         .filter((product): product is Product => Boolean(product))
         .sort((a, b) => {
-          const dateA = String(a.createdAt || a.metadata?.entryDate || "");
-          const dateB = String(b.createdAt || b.metadata?.entryDate || "");
+          const dateA = String((a as any).createdAt || a.metadata?.entryDate || "");
+          const dateB = String((b as any).createdAt || b.metadata?.entryDate || "");
           return dateA.localeCompare(dateB) || a.id.localeCompare(b.id);
         });
 
@@ -138,7 +138,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         if (availableProductStock <= 0) continue;
 
         let allocated = 0;
-        const rollAllocations: Array<{ rollId: string; length: number }> = [];
+        const rollAllocations: Array<{ rollId: string; length: number; productId?: string }> = [];
         if (shouldShowRolls(product) && product.rolls?.length) {
           const balance = getRollStockBalance(product);
           if (!balance.isBalanced) {
