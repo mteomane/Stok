@@ -805,7 +805,8 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
               displayedProducts.map((p) => {
                 const isFabric = shouldShowRolls(p);
                 const hasBoxes = p.boxes && p.boxes.length > 0;
-                const isConfigurable = isFabric || hasBoxes;
+                const hasVariants = Boolean(p.groupMembers && p.groupMembers.length > 1);
+                const isConfigurable = isFabric || hasBoxes || hasVariants;
 
                 return (
                   <div
