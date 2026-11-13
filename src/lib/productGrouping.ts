@@ -45,9 +45,10 @@ function groupKey(product: Product): string {
   const colorCode = attr(product, ["colorCode", "RenkKodu", "Renk Kodu"]);
   const width = attr(product, ["width", "En", "Kumaş Eni"]);
   const pattern = attr(product, ["pattern", "Desen", "Desen / Baskı"]);
-  const price = Number(product.price || 0).toFixed(2);
+  // Legacy fabric tops are physical stock lots of the same sellable variety.
+  // Their purchase/sale prices may differ per top, so price must not split the parent group.
   const archived = product.isActive === false ? "archived" : "active";
-  return JSON.stringify([name, category, brand, unit, fabricType, color, colorCode, width, pattern, price, archived]);
+  return JSON.stringify([name, category, brand, unit, fabricType, color, colorCode, width, pattern, archived]);
 }
 
 function stableTopOrder(a: Product, b: Product): number {
