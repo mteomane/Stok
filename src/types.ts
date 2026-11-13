@@ -194,6 +194,10 @@ export interface Product {
   costPrice?: number; // Alış Fiyatı (Opsiyonel)
   stock: number; // Physical remaining stock; active cart reservations are tracked separately.
   reservedStock?: number; // Stock currently reserved by active sales carts.
+  /** Presentation-only IDs for a grouped textile product; never persist from UI projections. */
+  groupProductIds?: string[];
+  /** Source products represented by this grouped textile product (presentation only). */
+  groupMembers?: Product[];
   minStock: number;
   description?: string; // Ürün Açıklaması
   warehouseId?: string; // İlgili depo referansı
@@ -233,8 +237,10 @@ export interface SaleItem {
   selectedBoxNumber?: string;
   cutLength?: number;
   unit?: string;
-  rollAllocations?: Array<{ rollId: string; length: number }>;
-  boxAllocations?: Array<{ boxId: string; quantity: number }>;
+  rollAllocations?: Array<{ rollId: string; length: number; productId?: string }>;
+  boxAllocations?: Array<{ boxId: string; quantity: number; productId?: string }>;
+  /** Exact source product allocations for a grouped fabric sale, used for cancellation. */
+  productAllocations?: Array<{ productId: string; quantity: number; rollAllocations?: Array<{ rollId: string; length: number }> }>;
 }
 
 export interface Sale {
