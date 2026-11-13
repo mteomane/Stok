@@ -1757,6 +1757,46 @@ export class FirebaseSalesRepository implements SalesRepository {
         const prod = workingProducts.find(p => p.id === item.productId);
         if (!prod) continue;
 
+        if (Array.isArray((item as any).productAllocations) && (item as any).productAllocations.length > 0) {
+          for (const allocation of (item as any).productAllocations) {
+            const source = workingProducts.find((entry) => entry.id === allocation.productId);
+            if (!source) throw new Error("Satış iptali için kumaş top kaydı bulunamadı: " + allocation.productId);
+            const sourcePreviousStock = roundQty(Number(source.stock || 0));
+            const sourceRolls = allocation.rollAllocations || [];
+            if (sourceRolls.length > 0 && source.rolls) {
+              for (const rollAllocation of sourceRolls) {
+                const roll = source.rolls.find((entry) => entry.id === rollAllocation.rollId);
+                if (!roll) throw new Error("Satış iptali için kumaş topu bulunamadı: " + rollAllocation.rollId);
+                const restoreLength = roundQty(Number(rollAllocation.length || 0));
+                roll.length = roundQty(Number(roll.length || 0) + restoreLength);
+                roll.soldLength = roundQty(Math.max(0, Number(roll.soldLength || 0) - restoreLength));
+                if (roll.length > 0 && roll.status === "sold") roll.status = "available";
+              }
+              source.stock = roundQty(source.rolls.reduce((sum, roll) => sum + Number(roll.length || 0), 0));
+            } else {
+              source.stock = roundQty(Number(source.stock || 0) + Number(allocation.quantity || 0));
+            }
+            reverseMovements.push({
+              id: saleId + "_cancel_mov_" + i + "_" + source.id,
+              tenantId: context.tenantId,
+              userId: validUid,
+              productId: source.id,
+              productName: source.name,
+              warehouseId: source.warehouseId || undefined,
+              type: "in",
+              quantity: Number(allocation.quantity || 0),
+              previousStock: sourcePreviousStock,
+              newStock: source.stock,
+              unit: "Metre",
+              referenceType: "sale",
+              referenceId: saleId,
+              timestamp: now,
+              notes: "Satış İptali - Kumaş top stok iadesi (Fiş: #" + saleId + ")"
+            });
+          }
+          continue;
+        }
+
         const qtyToRestore = roundQty(Number(item.quantity));
         const previousStock = roundQty(Number(prod.stock || 0));
         const rollId = (item as any).selectedRollId || (item as any).rollId;
@@ -1927,7 +1967,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         }
 
         // READ 2: Unique products
-        const uniqueProductIds = Array.from(new Set(saleData.items.map(i => i.productId)));
+        const uniqueProductIds = Array.from(new Set(saleData.items.flatMap((item: any) => [item.productId, ...((item.productAllocations || []).map((allocation: any) => allocation.productId))])));
         const productDocsMap = new Map<string, any>();
 
         for (const pId of uniqueProductIds) {
@@ -1938,7 +1978,8 @@ export class FirebaseSalesRepository implements SalesRepository {
           }
         }
 
-        const hasUnallocatedLegacyPackageSale = saleData.items.some((item) => {
+        const hasUnallocatedLegacyPackageSale = saleData.items.some((item: any) => {
+          if (Array.isArray(item.productAllocations) && item.productAllocations.length > 0) return false;
           const prod = productDocsMap.get(item.productId);
           if (!prod) return false;
           if (shouldShowRolls(prod) && prod.rolls && prod.rolls.length > 0) {
@@ -1987,6 +2028,48 @@ export class FirebaseSalesRepository implements SalesRepository {
           const item = saleData.items[i];
           const prod = workingProducts.get(item.productId);
           if (!prod) continue;
+
+          if (Array.isArray((item as any).productAllocations) && (item as any).productAllocations.length > 0) {
+            for (const allocation of (item as any).productAllocations) {
+              const source = workingProducts.get(allocation.productId);
+              if (!source) throw new Error("Satış iptali için kumaş top kaydı bulunamadı: " + allocation.productId);
+              const sourcePreviousStock = roundQty(Number(source.stock || 0));
+              const sourceRolls = allocation.rollAllocations || [];
+              if (sourceRolls.length > 0 && source.rolls) {
+                for (const rollAllocation of sourceRolls) {
+                  const roll = source.rolls.find((entry: FabricRoll) => entry.id === rollAllocation.rollId);
+                  if (!roll) throw new Error("Satış iptali için kumaş topu bulunamadı: " + rollAllocation.rollId);
+                  const restoreLength = roundQty(Number(rollAllocation.length || 0));
+                  roll.length = roundQty(Number(roll.length || 0) + restoreLength);
+                  roll.soldLength = roundQty(Math.max(0, Number(roll.soldLength || 0) - restoreLength));
+                  if (roll.length > 0 && roll.status === "sold") roll.status = "available";
+                }
+                source.stock = roundQty(source.rolls.reduce((sum: number, roll: FabricRoll) => sum + Number(roll.length || 0), 0));
+              } else {
+                source.stock = roundQty(Number(source.stock || 0) + Number(allocation.quantity || 0));
+              }
+              const movementId = saleId + "_cancel_mov_" + i + "_" + source.id;
+              const reverseMovement: any = {
+                id: movementId,
+                tenantId: context.tenantId,
+                userId: validUid,
+                productId: source.id,
+                productName: source.name,
+                type: "in",
+                quantity: Number(allocation.quantity || 0),
+                previousStock: sourcePreviousStock,
+                newStock: source.stock,
+                unit: "Metre",
+                referenceType: "sale",
+                referenceId: saleId,
+                timestamp: now,
+                notes: "Satış İptali - Kumaş top stok iadesi (Fiş: #" + saleId + ")"
+              };
+              if (source.warehouseId) reverseMovement.warehouseId = source.warehouseId;
+              reverseMovements.push(reverseMovement);
+            }
+            continue;
+          }
 
           const qtyToRestore = roundQty(Number(item.quantity));
           const previousStock = roundQty(Number(prod.stock || 0));
