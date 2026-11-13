@@ -332,7 +332,7 @@ export class FirebaseSalesRepository implements SalesRepository {
       const availableStock = roundQty(Math.max(0, Number(working.stock || 0) - reservedStock));
       if (availableStock < qty) throw new Error(`Yetersiz kullanılabilir stok. Şu anda yalnızca ${availableStock} ${shouldShowRolls(working) ? "metre" : (working.unit || "adet")} ayırabilirsiniz.`);
 
-      const rollAllocations: Array<{ rollId: string; length: number }> = [];
+      const rollAllocations: Array<{ rollId: string; length: number; productId?: string }> = [];
       const boxAllocations: Array<{ boxId: string; quantity: number }> = [];
       if (shouldShowRolls(working) && working.rolls?.length) {
         let remaining = qty;
@@ -423,7 +423,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         throw new Error(`Yetersiz kullanılabilir stok. Şu anda yalnızca ${availableStock} ${shouldShowRolls(working) ? "metre" : (working.unit || "adet")} ayırabilirsiniz.`);
       }
 
-      const rollAllocations: Array<{ rollId: string; length: number }> = [];
+      const rollAllocations: Array<{ rollId: string; length: number; productId?: string }> = [];
       const boxAllocations: Array<{ boxId: string; quantity: number }> = [];
       if (shouldShowRolls(working) && working.rolls?.length) {
         let remaining = qty;
@@ -771,7 +771,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         }
 
         const isRollTracked = shouldShowRolls(prod);
-        const rollAllocations: Array<{ rollId: string; length: number }> = [];
+        const rollAllocations: Array<{ rollId: string; length: number; productId?: string }> = [];
         const boxAllocations: Array<{ boxId: string; quantity: number }> = [];
         const groupProductAllocations: Array<{ productId: string; quantity: number; rollAllocations: Array<{ rollId: string; length: number }> }> = [];
 
@@ -1226,7 +1226,7 @@ export class FirebaseSalesRepository implements SalesRepository {
           }
 
           const isRollTracked = shouldShowRolls(prod);
-          const rollAllocations: Array<{ rollId: string; length: number }> = [];
+          const rollAllocations: Array<{ rollId: string; length: number; productId?: string }> = [];
           const boxAllocations: Array<{ boxId: string; quantity: number }> = [];
           const groupProductAllocations: Array<{ productId: string; quantity: number; rollAllocations: Array<{ rollId: string; length: number }> }> = [];
 
@@ -1284,14 +1284,13 @@ export class FirebaseSalesRepository implements SalesRepository {
                 }
                 groupProductAllocations.push({ productId: source.id, quantity: amount, rollAllocations: sourceRollAllocations });
                 const moveId = saleRef.id + "_mov_" + i + "_" + source.id;
-                stockMovementsToCreate.push({
+                const sourceMovement: any = {
                   id: moveId,
                   tenantId: context.tenantId,
                   userId: uid,
                   productId: source.id,
                   productName: source.name,
-                  warehouseId: source.warehouseId,
-                  type: "roll_cut",
+                                    type: "roll_cut",
                   quantity: amount,
                   previousStock: roundQty(Number(source.stock || 0) + amount),
                   newStock: roundQty(Number(source.stock || 0)),
@@ -1300,7 +1299,9 @@ export class FirebaseSalesRepository implements SalesRepository {
                   referenceId: saleRef.id,
                   timestamp: new Date().toISOString(),
                   notes: "Satış Fişi #" + saleRef.id + " - Kumaş grup metraj çıkışı"
-                } as StockMovement);
+                };
+                if (source.warehouseId) sourceMovement.warehouseId = source.warehouseId;
+                stockMovementsToCreate.push(sourceMovement as StockMovement);
               }
             } else {
               prod.reservedStock = roundQty(Math.max(0, Number(prod.reservedStock || 0) - qtyToDeduct));
