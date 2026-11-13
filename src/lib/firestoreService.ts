@@ -533,9 +533,10 @@ export async function reserveStockForSale(
   productId: string,
   quantity: number,
   reservationId: string,
-  selectedBoxId?: string
+  selectedBoxId?: string,
+  groupProductIds?: string[]
 ): Promise<Product> {
-  return repositories.sales.reserveStock(uid, productId, quantity, reservationId, selectedBoxId);
+  return repositories.sales.reserveStock(uid, productId, quantity, reservationId, selectedBoxId, groupProductIds);
 }
 
 export async function releaseStockReservation(uid: string, reservationId: string): Promise<Product | null> {
