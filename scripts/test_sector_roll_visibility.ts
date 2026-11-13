@@ -1,6 +1,6 @@
 import type { Product } from "../src/types";
 import { getAvailableBoxQuantity, getAvailableRollLength, getAvailableStock, getRollStockBalance, shouldShowRolls } from "../src/lib/sectorConfig";
-import { groupFabricProducts, getGroupedAvailableStock } from "../src/lib/productGrouping";
+import { groupFabricProducts, groupProducts, getGroupedAvailableStock } from "../src/lib/productGrouping";
 
 function makeProduct(overrides: Partial<Product> = {}): Product {
   return {
@@ -158,5 +158,24 @@ const differentColor = makeProduct({
   metadata: { fabricType: "Pamuk", color: "Kırmızı", width: "150cm" }
 });
 assertEqual(groupFabricProducts([...separateTopProducts, differentColor]).length === 2, true, "Farklı renk varyantı ayrı kumaş çeşidi olarak kalır");
+
+
+const shoeFamily: Product[] = [
+  makeProduct({ id: "shoe-black-40", productFamilyId: "family-running-shoe-01", variantLabel: "Siyah / 40", name: "Koşu Ayakkabısı", sku: "SHOE-BLK-40", category: "Ayakkabı", unit: "Adet", stock: 4, attributes: { Renk: "Siyah", Numara: "40" } }),
+  makeProduct({ id: "shoe-black-41", productFamilyId: "family-running-shoe-01", variantLabel: "Siyah / 41", name: "Koşu Ayakkabısı", sku: "SHOE-BLK-41", category: "Ayakkabı", unit: "Adet", stock: 6, attributes: { Renk: "Siyah", Numara: "41" } }),
+  makeProduct({ id: "shoe-white-40", productFamilyId: "family-running-shoe-01", variantLabel: "Beyaz / 40", name: "Koşu Ayakkabısı", sku: "SHOE-WHT-40", category: "Ayakkabı", unit: "Adet", stock: 3, attributes: { Renk: "Beyaz", Numara: "40" } })
+];
+const groupedShoes = groupProducts(shoeFamily);
+assertEqual(groupedShoes.length === 1, true, "Tekstil dışındaki aynı ürün ailesinin varyantları tek ana satırda birleşir");
+assertEqual(groupedShoes[0].stock === 13, true, "Genel ürün ailesinin alt kırılımlarındaki stoklar toplanır");
+assertEqual(groupedShoes[0].groupMembers?.length === 3, true, "Genel ürün ailesinin üç varyantı ayrıntıda korunur");
+assertEqual(groupedShoes[0].groupProductIds?.length === 3, true, "Genel ürün ailesinin kaynak kayıt kimlikleri korunur");
+const sameNameDifferentFamilies = groupProducts([...shoeFamily, makeProduct({ id: "shoe-other-brand", productFamilyId: "family-running-shoe-02", name: "Koşu Ayakkabısı", sku: "OTHER-BRAND-01", category: "Ayakkabı", unit: "Adet", stock: 2 })]);
+assertEqual(sameNameDifferentFamilies.length === 2, true, "Farklı ürün aileleri isimleri aynı olsa bile yanlışlıkla birleştirilmez");
+const ungroupedSameName = groupProducts([
+  makeProduct({ id: "generic-a", name: "USB Kablo", category: "Elektronik", unit: "Adet", stock: 5 }),
+  makeProduct({ id: "generic-b", name: "USB Kablo", category: "Elektronik", unit: "Adet", stock: 7 })
+]);
+assertEqual(ungroupedSameName.length === 2, true, "Aile kimliği olmayan genel ürünler yalnızca isimleri aynı diye otomatik birleştirilmez");
 
 console.log("\nSector roll visibility regression tests completed successfully.");
