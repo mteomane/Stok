@@ -26,10 +26,11 @@ import {
 import { QRScanner } from "./QRScanner";
 import { ReceiptPrintModal } from "./ReceiptPrintModal";
 import { getAvailableBoxQuantity, getAvailableRollLength, getAvailableStock, getRollStockBalance, shouldShowRolls } from "../lib/sectorConfig";
+import { groupFabricProducts } from "../lib/productGrouping";
 
 interface QuickSaleProps {
   products: Product[];
-  onReserveStock: (productId: string, quantity: number, reservationId: string, selectedBoxId?: string) => Promise<Product>;
+  onReserveStock: (productId: string, quantity: number, reservationId: string, selectedBoxId?: string, groupProductIds?: string[]) => Promise<Product>;
   onReleaseStockReservation: (reservationId: string) => Promise<void>;
   onRecordSale: (
     items: { 
@@ -39,6 +40,7 @@ interface QuickSaleProps {
       cutLength?: number;
       selectedBoxId?: string;
       reservationId?: string;
+      productIds?: string[];
     }[], 
     customerId?: string, 
     amountPaid?: number,
@@ -49,6 +51,7 @@ interface QuickSaleProps {
 
 export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseStockReservation }: QuickSaleProps) {
   const [cart, setCart] = useState<CartItem[]>([]);
+  const groupedProducts = React.useMemo(() => groupFabricProducts(products), [products]);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
@@ -80,19 +83,19 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
   useEffect(() => {
     setSelectedProduct((current) => {
       if (!current) return current;
-      return products.find((product) => product.id === current.id) || current;
+      return groupedProducts.find((product) => product.id === current.id) || current;
     });
     setCart((current) => {
       let changed = false;
       const next = current.map((item) => {
-        const latest = products.find((product) => product.id === item.product.id);
+        const latest = groupedProducts.find((product) => product.id === item.product.id);
         if (!latest || latest === item.product) return item;
         changed = true;
         return { ...item, product: latest };
       });
       return changed ? next : current;
     });
-  }, [products]);
+  }, [groupedProducts]);
 
   // Load customers for checkout selection
   const fetchCustomers = async () => {
@@ -116,15 +119,15 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
   // Extract unique categories for quick filter
   const categories = React.useMemo(() => {
     const set = new Set<string>();
-    products.forEach((p) => {
+    groupedProducts.forEach((p) => {
       if (p.category) set.add(p.category);
     });
     return ["all", ...Array.from(set)];
-  }, [products]);
+  }, [groupedProducts]);
 
   // Filtered products: Visible even when search is empty!
   const displayedProducts = React.useMemo(() => {
-    return products.filter((p) => {
+    return groupedProducts.filter((p) => {
       // Category filter
       if (selectedCategory !== "all" && p.category?.toLowerCase() !== selectedCategory.toLowerCase()) {
         return false;
@@ -133,15 +136,16 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
       // Search term filter
       if (!search.trim()) return true;
       const term = search.trim().toLowerCase();
-      return (
-        p.name.toLowerCase().includes(term) ||
-        (p.sku && p.sku.toLowerCase().includes(term)) ||
-        (p.barcode && p.barcode.toLowerCase().includes(term)) ||
-        (p.brand && p.brand.toLowerCase().includes(term)) ||
-        p.id.toLowerCase().includes(term)
+      const members = p.groupMembers?.length ? p.groupMembers : [p];
+      return members.some((member) =>
+        member.name.toLowerCase().includes(term) ||
+        (member.sku && member.sku.toLowerCase().includes(term)) ||
+        (member.barcode && member.barcode.toLowerCase().includes(term)) ||
+        (member.brand && member.brand.toLowerCase().includes(term)) ||
+        member.id.toLowerCase().includes(term)
       );
     });
-  }, [products, search, selectedCategory]);
+  }, [groupedProducts, search, selectedCategory]);
 
   const selectProductToConfigure = (prod: Product) => {
     setSelectedProduct(prod);
@@ -201,7 +205,7 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
 
       // Atomically hold stock before showing the line in the cart.
       const reservationId = existingItem?.reservationId || createReservationId();
-      await onReserveStock(product.id, desiredQuantity, reservationId, finalBoxId);
+      await onReserveStock(product.id, desiredQuantity, reservationId, finalBoxId, product.groupProductIds);
 
       if (existingIndex >= 0) {
         setCart((previous) => previous.map((item, index) => index === existingIndex
@@ -249,11 +253,12 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
       const term = search.trim().toLowerCase();
       if (!term) return;
 
-      const exactMatch = products.find(
+      const exactMatch = groupedProducts.find(
         (p) =>
           (p.barcode && p.barcode.trim().toLowerCase() === term) ||
           (p.sku && p.sku.trim().toLowerCase() === term) ||
-          p.id.toLowerCase() === term
+          p.id.toLowerCase() === term ||
+          p.groupMembers?.some((member) => member.barcode?.trim().toLowerCase() === term || member.sku?.trim().toLowerCase() === term || member.id.toLowerCase() === term)
       );
 
       if (exactMatch) {
@@ -270,11 +275,12 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
 
   const handleCameraScanSuccess = (decodedText: string) => {
     const clean = decodedText.trim().toLowerCase();
-    const matched = products.find(
+    const matched = groupedProducts.find(
       (p) =>
         (p.barcode && p.barcode.trim().toLowerCase() === clean) ||
         (p.sku && p.sku.trim().toLowerCase() === clean) ||
-        p.id.toLowerCase() === clean
+        p.id.toLowerCase() === clean ||
+        p.groupMembers?.some((member) => member.barcode?.trim().toLowerCase() === clean || member.sku?.trim().toLowerCase() === clean || member.id.toLowerCase() === clean)
     );
 
     if (matched) {
@@ -307,7 +313,7 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
 
     try {
       if (cartItem.reservationId) {
-        await onReserveStock(productId, roundedQty, cartItem.reservationId, cartItem.selectedBoxId);
+        await onReserveStock(productId, roundedQty, cartItem.reservationId, cartItem.selectedBoxId, cartItem.product.groupProductIds);
       }
       setCart((previous) => previous.map((item) =>
         item.product.id === productId && item.selectedRollId === rollId && item.selectedBoxId === boxId
@@ -391,6 +397,7 @@ export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseSto
         cutLength: item.cutLength,
         selectedBoxId: item.selectedBoxId,
         reservationId: item.reservationId,
+        productIds: item.product.groupProductIds,
       }));
 
       const result = await onRecordSale(
