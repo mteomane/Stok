@@ -773,6 +773,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         const isRollTracked = shouldShowRolls(prod);
         const rollAllocations: Array<{ rollId: string; length: number }> = [];
         const boxAllocations: Array<{ boxId: string; quantity: number }> = [];
+        const groupProductAllocations: Array<{ productId: string; quantity: number; rollAllocations: Array<{ rollId: string; length: number }> }> = [];
 
         if (isRollTracked && prod.rolls && prod.rolls.length > 0) {
           const balance = getRollStockBalance(prod);
@@ -794,40 +795,86 @@ export class FirebaseSalesRepository implements SalesRepository {
             throw new Error("Sepet rezervasyonu ile satış miktarı eşleşmiyor. Miktarı yeniden ayırın.");
           }
 
-          prod.reservedStock = roundQty(Math.max(0, Number(prod.reservedStock || 0) - qtyToDeduct));
-          for (const allocation of cartReservation.rollAllocations || []) {
-            const roll = prod.rolls?.find(r => r.id === allocation.rollId);
-            if (!roll) throw new Error("Rezervasyondaki kumaş topu bulunamadı.");
-            const amount = roundQty(Number(allocation.length || 0));
-            if (Number(roll.reservedLength || 0) < amount || Number(roll.length || 0) < amount) {
-              throw new Error("Rezerve edilen kumaş topu miktarı artık uygun değil.");
+          if (Array.isArray(cartReservation.productAllocations) && cartReservation.productAllocations.length > 0) {
+            for (const allocation of cartReservation.productAllocations) {
+              const source = productsList.find((entry) => entry.id === allocation.productId);
+              if (!source) throw new Error("Sepet rezervasyonundaki kumaş topu bulunamadı.");
+              const amount = roundQty(Number(allocation.quantity || 0));
+              source.reservedStock = roundQty(Math.max(0, Number(source.reservedStock || 0) - amount));
+              const sourceRollAllocations: Array<{ rollId: string; length: number }> = [];
+              for (const rollAllocation of allocation.rollAllocations || []) {
+                const roll = source.rolls?.find((entry) => entry.id === rollAllocation.rollId);
+                if (!roll) throw new Error("Rezervasyondaki kumaş topu bulunamadı.");
+                const rollAmount = roundQty(Number(rollAllocation.length || 0));
+                if (Number(roll.reservedLength || 0) < rollAmount || Number(roll.length || 0) < rollAmount) {
+                  throw new Error("Rezerve edilen kumaş topu miktarı artık uygun değil.");
+                }
+                roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - rollAmount));
+                roll.length = roundQty(Math.max(0, Number(roll.length || 0) - rollAmount));
+                roll.soldLength = roundQty(Number(roll.soldLength || 0) + rollAmount);
+                roll.status = roll.length <= 0 ? "sold" : "available";
+                sourceRollAllocations.push({ rollId: roll.id, length: rollAmount });
+                rollAllocations.push({ rollId: roll.id, length: rollAmount, productId: source.id });
+              }
+              if (sourceRollAllocations.length > 0 && source.rolls) {
+                source.stock = roundQty(source.rolls.reduce((sum, roll) => sum + (Number(roll.length) || 0), 0));
+              } else {
+                source.stock = roundQty(Math.max(0, Number(source.stock || 0) - amount));
+              }
+              groupProductAllocations.push({ productId: source.id, quantity: amount, rollAllocations: sourceRollAllocations });
+              demoMovementsToRecord.push({
+                id: scopedSaleId + "_mov_" + i + "_" + source.id,
+                tenantId: context.tenantId,
+                userId: uid,
+                productId: source.id,
+                productName: source.name,
+                warehouseId: source.warehouseId || undefined,
+                type: "roll_cut",
+                quantity: amount,
+                previousStock: roundQty(Number(source.stock || 0) + amount),
+                newStock: roundQty(Number(source.stock || 0)),
+                unit: "Metre",
+                referenceType: "sale",
+                referenceId: scopedSaleId,
+                timestamp: new Date().toISOString(),
+                notes: "Satış Fişi #" + scopedSaleId + " - Kumaş grup metraj çıkışı"
+              });
             }
-            roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - amount));
-            roll.length = roundQty(Math.max(0, Number(roll.length || 0) - amount));
-            roll.soldLength = roundQty(Number(roll.soldLength || 0) + amount);
-            roll.status = roll.length <= 0 ? "sold" : "available";
-            rollAllocations.push({ rollId: roll.id, length: amount });
-          }
-          for (const allocation of cartReservation.boxAllocations || []) {
-            const box = prod.boxes?.find(b => b.id === allocation.boxId);
-            if (!box) throw new Error("Rezervasyondaki koli bulunamadı.");
-            const amount = roundQty(Number(allocation.quantity || 0));
-            if (Number(box.reservedQuantity || 0) < amount || Number(box.quantity || 0) < amount) {
-              throw new Error("Rezerve edilen koli miktarı artık uygun değil.");
-            }
-            box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - amount));
-            box.quantity = roundQty(Math.max(0, Number(box.quantity || 0) - amount));
-            box.soldQuantity = roundQty(Number(box.soldQuantity || 0) + amount);
-            box.status = box.quantity <= 0 ? "depleted" : "available";
-            boxAllocations.push({ boxId: box.id, quantity: amount });
-          }
-
-          if (rollAllocations.length > 0 && prod.rolls) {
-            prod.stock = roundQty(prod.rolls.reduce((sum, roll) => sum + (Number(roll.length) || 0), 0));
-          } else if (boxAllocations.length > 0 && prod.boxes) {
-            prod.stock = roundQty(prod.boxes.reduce((sum, box) => sum + (Number(box.quantity) || 0), 0));
           } else {
-            prod.stock = roundQty(Math.max(0, Number(prod.stock || 0) - qtyToDeduct));
+            prod.reservedStock = roundQty(Math.max(0, Number(prod.reservedStock || 0) - qtyToDeduct));
+            for (const allocation of cartReservation.rollAllocations || []) {
+              const roll = prod.rolls?.find(r => r.id === allocation.rollId);
+              if (!roll) throw new Error("Rezervasyondaki kumaş topu bulunamadı.");
+              const amount = roundQty(Number(allocation.length || 0));
+              if (Number(roll.reservedLength || 0) < amount || Number(roll.length || 0) < amount) {
+                throw new Error("Rezerve edilen kumaş topu miktarı artık uygun değil.");
+              }
+              roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - amount));
+              roll.length = roundQty(Math.max(0, Number(roll.length || 0) - amount));
+              roll.soldLength = roundQty(Number(roll.soldLength || 0) + amount);
+              roll.status = roll.length <= 0 ? "sold" : "available";
+              rollAllocations.push({ rollId: roll.id, length: amount });
+            }
+            for (const allocation of cartReservation.boxAllocations || []) {
+              const box = prod.boxes?.find(b => b.id === allocation.boxId);
+              if (!box) throw new Error("Rezervasyondaki koli bulunamadı.");
+              const amount = roundQty(Number(allocation.quantity || 0));
+              if (Number(box.reservedQuantity || 0) < amount || Number(box.quantity || 0) < amount) {
+                throw new Error("Rezerve edilen koli miktarı artık uygun değil.");
+              }
+              box.reservedQuantity = roundQty(Math.max(0, Number(box.reservedQuantity || 0) - amount));
+              box.quantity = roundQty(Math.max(0, Number(box.quantity || 0) - amount));
+              box.soldQuantity = roundQty(Number(box.soldQuantity || 0) + amount);
+              box.status = box.quantity <= 0 ? "depleted" : "available";
+              boxAllocations.push({ boxId: box.id, quantity: amount });
+            }
+            if (rollAllocations.length > 0 && prod.rolls) {
+              prod.stock = roundQty(prod.rolls.reduce((sum, roll) => sum + (Number(roll.length) || 0), 0));
+            } else if (boxAllocations.length > 0 && prod.boxes) {
+              prod.stock = roundQty(prod.boxes.reduce((sum, box) => sum + (Number(box.quantity) || 0), 0));
+            } else {
+              prod.stock = roundQty(Math.max(0, Number(prod.stock || 0) - qtyToDeduct));
+            }
           }
           cartReservation.status = "committed";
           cartReservation.committedAt = new Date().toISOString();
@@ -944,8 +991,10 @@ export class FirebaseSalesRepository implements SalesRepository {
         if (item.cutLength !== undefined) saleItem.cutLength = roundQty(Number(item.cutLength));
         if (rollAllocations.length > 0) saleItem.rollAllocations = rollAllocations;
         if (boxAllocations.length > 0) saleItem.boxAllocations = boxAllocations;
+        if (groupProductAllocations.length > 0) saleItem.productAllocations = groupProductAllocations;
         saleItems.push(saleItem);
 
+        if (groupProductAllocations.length === 0) {
         const movementDocId = `${scopedSaleId}_mov_${i}_${item.productId}`;
         demoMovementsToRecord.push({
           id: movementDocId,
@@ -968,6 +1017,7 @@ export class FirebaseSalesRepository implements SalesRepository {
               ? `Satış Fişi #${scopedSaleId} - Koli çıkışı`
               : `Satış Fişi #${scopedSaleId}`)
         });
+        }
       }
 
       const saleId = scopedSaleId;
