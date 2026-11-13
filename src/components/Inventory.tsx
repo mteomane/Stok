@@ -43,6 +43,7 @@ import { QuickProductModal } from "./QuickProductModal";
 import { QuickReplenishModal } from "./QuickReplenishModal";
 import { QRScanner } from "./QRScanner";
 import { getAvailableStock, getSectorProfile, shouldShowRolls, SECTOR_PROFILES } from "../lib/sectorConfig";
+import { groupFabricProducts, getGroupedAvailableStock } from "../lib/productGrouping";
 import { exportService } from "../lib/export/ExportService";
 import { triggerFileDownload } from "../lib/export/fileDownload";
 
@@ -248,7 +249,7 @@ export function Inventory({
 
   useEffect(() => {
     if (!selectedRollProduct) return;
-    const latest = products.find((product) => product.id === selectedRollProduct.id);
+    const latest = groupFabricProducts(products).find((product) => product.id === selectedRollProduct.id);
     if (latest && latest !== selectedRollProduct) setSelectedRollProduct(latest);
   }, [products, selectedRollProduct?.id]);
   const [newRollNumber, setNewRollNumber] = useState("");
@@ -446,18 +447,19 @@ export function Inventory({
     return getSectorProfile(key).name;
   };
 
-  // Memoized categories extraction
-  const categories = useMemo(() => ["Tümü", ...Array.from(new Set(products.map((p) => p.category || "Genel")))], [products]);
+  const displayProducts = useMemo(() => groupFabricProducts(products), [products]);
 
-  // Low stock count (active products only)
-  const lowStockCount = useMemo(() => products.filter((p) => p.isActive !== false && getAvailableStock(p) <= p.minStock).length, [products]);
-  // Archived count
-  const archivedCount = useMemo(() => products.filter((p) => p.isActive === false).length, [products]);
+  // Memoized categories extraction
+  const categories = useMemo(() => ["Tümü", ...Array.from(new Set(displayProducts.map((p) => p.category || "Genel")))], [displayProducts]);
+
+  // Counts are based on displayed fabric varieties, not individual physical top records.
+  const lowStockCount = useMemo(() => displayProducts.filter((p) => p.isActive !== false && getGroupedAvailableStock(p) <= p.minStock).length, [displayProducts]);
+  const archivedCount = useMemo(() => displayProducts.filter((p) => p.isActive === false).length, [displayProducts]);
 
   // Memoized product filtering
   const filteredProducts = useMemo(() => {
     const q = debouncedSearch.toLowerCase().trim();
-    return products.filter((p) => {
+    return displayProducts.filter((p) => {
       const isArchived = p.isActive === false;
       if (showArchived) {
         if (!isArchived) return false;
@@ -465,17 +467,19 @@ export function Inventory({
         if (isArchived) return false;
       }
 
-      const matchesSearch = !q ||
-        p.name.toLowerCase().includes(q) || 
-        p.sku.toLowerCase().includes(q) ||
-        (p.barcode && p.barcode.toLowerCase().includes(q)) ||
-        (p.brand && p.brand.toLowerCase().includes(q)) ||
-        (p.category && p.category.toLowerCase().includes(q));
+      const sourceProducts = p.groupMembers?.length ? p.groupMembers : [p];
+      const matchesSearch = !q || sourceProducts.some((member) =>
+        member.name.toLowerCase().includes(q) ||
+        member.sku.toLowerCase().includes(q) ||
+        (member.barcode && member.barcode.toLowerCase().includes(q)) ||
+        (member.brand && member.brand.toLowerCase().includes(q)) ||
+        (member.category && member.category.toLowerCase().includes(q))
+      );
       const matchesCategory = selectedCategory === "Tümü" || p.category === selectedCategory;
-      const matchesLowStock = !onlyLowStock || getAvailableStock(p) <= p.minStock;
+      const matchesLowStock = !onlyLowStock || getGroupedAvailableStock(p) <= p.minStock;
       return matchesSearch && matchesCategory && matchesLowStock;
     });
-  }, [products, showArchived, debouncedSearch, selectedCategory, onlyLowStock]);
+  }, [displayProducts, showArchived, debouncedSearch, selectedCategory, onlyLowStock]);
 
   const totalPages = Math.ceil(filteredProducts.length / pageSize) || 1;
   const paginatedProducts = useMemo(() => {
