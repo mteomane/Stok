@@ -24,6 +24,7 @@ interface QuickProductModalProps {
   initialName?: string;
   existingProducts: Product[];
   onAddProduct: (product: Omit<Product, "id">) => Promise<void>;
+  onUpdateProduct?: (id: string, updates: Partial<Product>) => Promise<void>;
   onSelectExistingProduct?: (product: Product) => void;
   onClose: () => void;
 }
@@ -42,6 +43,7 @@ export function QuickProductModal({
   initialName,
   existingProducts,
   onAddProduct,
+  onUpdateProduct,
   onSelectExistingProduct,
   onClose
 }: QuickProductModalProps) {
@@ -102,8 +104,8 @@ export function QuickProductModal({
   // Existing explicit product families. Same-name products are deliberately never merged.
   const availableFamilies = useMemo(() => {
     const byFamily = new Map<string, Product>();
-    existingProducts.filter((product) => product.isActive !== false && product.productFamilyId).forEach((product) => {
-      const familyId = String(product.productFamilyId);
+    existingProducts.filter((product) => product.isActive !== false).forEach((product) => {
+      const familyId = String(product.productFamilyId || ("legacy_family_" + product.id));
       if (!byFamily.has(familyId)) byFamily.set(familyId, product);
     });
     return Array.from(byFamily.entries()).map(([id, product]) => ({ id, product }))
@@ -234,6 +236,13 @@ export function QuickProductModal({
         if (!isNaN(subStock)) {
           productPayload.subUnitStock = subStock;
         }
+      }
+
+      // When an older product has no family key, safely adopt it as the parent
+      // before creating its first child variant.
+      if (selectedFamily && !selectedFamily.productFamilyId && selectedFamilyId.startsWith("legacy_family_")) {
+        if (!onUpdateProduct) throw new Error("Mevcut ürün ailesi güncellenemedi. Lütfen önce ana ürünü düzenleyip tekrar deneyin.");
+        await onUpdateProduct(selectedFamily.id, { productFamilyId: selectedFamilyId });
       }
 
       await onAddProduct(productPayload);
