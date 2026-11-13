@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { Product, Sale } from "../types";
 import { isCancelledSale } from "../lib/salesMetrics";
 import { getAvailableStock, shouldShowRolls } from "../lib/sectorConfig";
+import { groupFabricProducts, getGroupedAvailableStock } from "../lib/productGrouping";
 import { 
   TrendingUp, 
   Box, 
@@ -45,10 +46,11 @@ export function Dashboard({
     const completedSales = sales.filter((sale) => !isCancelledSale(sale));
     const totalSalesCiro = completedSales.reduce((sum, sale) => sum + sale.totalAmount, 0);
     const completedSalesCount = completedSales.length;
-    const totalProductsCount = products.length;
-    const totalStockQuantity = products.reduce((sum, p) => sum + getAvailableStock(p), 0);
-    const lowStockProducts = products.filter((p) => getAvailableStock(p) <= p.minStock);
-    const outOfStockCount = lowStockProducts.filter((p) => getAvailableStock(p) <= 0).length;
+    const displayProducts = groupFabricProducts(products);
+    const totalProductsCount = displayProducts.length;
+    const totalStockQuantity = displayProducts.reduce((sum, p) => sum + getGroupedAvailableStock(p), 0);
+    const lowStockProducts = displayProducts.filter((p) => getGroupedAvailableStock(p) <= p.minStock);
+    const outOfStockCount = lowStockProducts.filter((p) => getGroupedAvailableStock(p) <= 0).length;
     const criticalDeficit = lowStockProducts.reduce((sum, p) => sum + Math.max(0, p.minStock - getAvailableStock(p)), 0);
     const stockHealthRate = totalProductsCount > 0 
       ? Math.round(((totalProductsCount - lowStockProducts.length) / totalProductsCount) * 100) 
