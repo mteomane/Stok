@@ -316,7 +316,7 @@ export default function App() {
 
   // Sales mutation (ACID Atomic Transaction)
   const handleRecordSale = async (
-    items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number; selectedBoxId?: string; reservationId?: string }[],
+    items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number; selectedBoxId?: string; reservationId?: string; productIds?: string[] }[],
     customerId?: string,
     amountPaid?: number,
     idempotencyKey?: string,
