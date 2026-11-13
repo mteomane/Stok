@@ -279,7 +279,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         productId: representativeId,
         productIds,
         quantity: qty,
-        unit: "Metre",
+        unit: working.get(representativeId)?.unit || "Adet",
         productAllocations: allocations,
         status: "active",
         createdAt: new Date(now).toISOString(),
