@@ -1,0 +1,135 @@
+import { Product, FabricRoll } from "../types";
+import { getAvailableStock, getAvailableRollLength, shouldShowRolls } from "./sectorConfig";
+
+const normalize = (value: unknown): string =>
+  String(value ?? "").normalize("NFKC").toLocaleLowerCase("tr-TR").replace(/\s+/g, " ").trim();
+
+function baseFabricName(name: string): string {
+  return normalize(name)
+    .replace(/[\s\-_–—]*(?:\(|\[)?\s*(?:top|rulo|roll)\s*(?:no\.?|#)?\s*[a-z0-9._-]+\s*(?:\)|\])?$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function attr(product: Product, keys: string[]): string {
+  const metadata = (product.metadata || {}) as Record<string, unknown>;
+  const attributes = (product.attributes || {}) as Record<string, unknown>;
+  for (const key of keys) {
+    const value = metadata[key] ?? attributes[key];
+    if (value !== undefined && value !== null && String(value).trim()) return normalize(value);
+  }
+  return "";
+}
+
+function isFabricRecord(product: Product): boolean {
+  const category = normalize(product.category);
+  const metadata = (product.metadata || {}) as Record<string, unknown>;
+  const attributes = product.attributes || {};
+  return shouldShowRolls(product) && (
+    ["kumaş", "kumas", "dokuma", "örme", "orme", "tekstil"].some((term) => category.includes(term)) ||
+    Boolean(metadata.fabricType || metadata.rollNumber || attributes["Rulo No"] || attributes.rollNumber)
+  );
+}
+
+function groupKey(product: Product): string {
+  const category = normalize(product.category);
+  const name = baseFabricName(product.name);
+  const brand = normalize(product.brand || product.metadata?.brand || "");
+  const unit = normalize(product.unit || "metre");
+  const fabricType = attr(product, ["fabricType", "Kumaş Tipi"]);
+  const color = attr(product, ["color", "colorName", "Renk", "Renk Adı"]);
+  const colorCode = attr(product, ["colorCode", "RenkKodu", "Renk Kodu"]);
+  const width = attr(product, ["width", "En", "Kumaş Eni"]);
+  const pattern = attr(product, ["pattern", "Desen", "Desen / Baskı"]);
+  const price = Number(product.price || 0).toFixed(2);
+  const archived = product.isActive === false ? "archived" : "active";
+  return JSON.stringify([name, category, brand, unit, fabricType, color, colorCode, width, pattern, price, archived]);
+}
+
+function stableTopOrder(a: Product, b: Product): number {
+  const da = String(a.createdAt || a.metadata?.entryDate || "");
+  const db = String(b.createdAt || b.metadata?.entryDate || "");
+  return da.localeCompare(db) || a.id.localeCompare(b.id);
+}
+
+function makeSyntheticRoll(product: Product, index: number): FabricRoll {
+  const metadata = (product.metadata || {}) as Record<string, unknown>;
+  const attributes = product.attributes || {};
+  const label = metadata.rollNumber || attributes["Rulo No"] || attributes.rollNumber || ("Top " + (index + 1));
+  const reserved = Number(product.reservedStock || 0);
+  return {
+    id: "product-roll:" + product.id,
+    productId: product.id,
+    rollNumber: String(label),
+    length: Number(product.stock || 0),
+    initialLength: Number(product.stock || 0),
+    reservedLength: reserved,
+    soldLength: 0,
+    status: Number(product.stock || 0) <= 0 ? "sold" : "available",
+    createdAt: String(product.createdAt || ""),
+  };
+}
+
+/** Combines duplicate textile product records into one presentation row without merging Firestore documents. */
+export function groupFabricProducts(products: Product[]): Product[] {
+  const groups = new Map<string, Product[]>();
+  const untouched: Product[] = [];
+
+  for (const product of products) {
+    if (!isFabricRecord(product)) {
+      untouched.push(product);
+      continue;
+    }
+    const key = groupKey(product);
+    const list = groups.get(key) || [];
+    list.push(product);
+    groups.set(key, list);
+  }
+
+  const grouped: Product[] = [...untouched];
+  for (const membersUnsorted of groups.values()) {
+    const members = [...membersUnsorted].sort(stableTopOrder);
+    if (members.length === 1) {
+      grouped.push(members[0]);
+      continue;
+    }
+
+    const representative = members[0];
+    const totalStock = Number(members.reduce((sum, member) => sum + Number(member.stock || 0), 0).toFixed(3));
+    const totalReserved = Number(members.reduce((sum, member) => sum + Number(member.reservedStock || 0), 0).toFixed(3));
+    const flattenedRolls: FabricRoll[] = [];
+
+    members.forEach((member, index) => {
+      if (member.rolls?.length) {
+        member.rolls.forEach((roll) => {
+          flattenedRolls.push({ ...roll, id: member.id + "::" + roll.id, productId: member.id });
+        });
+      } else {
+        flattenedRolls.push(makeSyntheticRoll(member, index));
+      }
+    });
+
+    grouped.push({
+      ...representative,
+      stock: totalStock,
+      reservedStock: totalReserved,
+      minStock: Math.max(...members.map((member) => Number(member.minStock || 0))),
+      rolls: flattenedRolls,
+      groupProductIds: members.map((member) => member.id),
+      groupMembers: members,
+    });
+  }
+
+  return grouped.sort((a, b) => a.name.localeCompare(b.name, "tr"));
+}
+
+export function getGroupedAvailableStock(product: Product): number {
+  if (product.groupProductIds?.length && product.groupMembers?.length) {
+    return Number(product.groupMembers.reduce((sum, member) => sum + getAvailableStock(member), 0).toFixed(3));
+  }
+  return getAvailableStock(product);
+}
+
+export function getGroupedAvailableRolls(product: Product): number {
+  return Number((product.rolls || []).reduce((sum, roll) => sum + getAvailableRollLength(roll), 0).toFixed(3));
+}
