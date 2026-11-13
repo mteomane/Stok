@@ -82,6 +82,207 @@ export class FirebaseSalesRepository implements SalesRepository {
     }
   }
 
+
+  /**
+   * Reserves one catalog fabric group across its underlying product documents.
+   * Every document is updated atomically; the reservation stores exact top allocations.
+   */
+  private async reserveGroupedFabricStock(
+    uid: string,
+    representativeId: string,
+    quantity: number,
+    reservationId: string,
+    groupProductIds: string[]
+  ): Promise<Product> {
+    const validUid = assertAuthenticated(uid, "SalesRepository.reserveGroupedFabricStock");
+    const qty = roundQty(Number(quantity));
+    if (!Number.isFinite(qty) || qty <= 0) throw new Error("Rezerve edilecek miktar sıfırdan büyük olmalıdır.");
+    const productIds = Array.from(new Set([representativeId, ...groupProductIds])).filter(Boolean);
+    if (productIds.length < 2 || productIds.length > 100) {
+      throw new Error("Kumaş ürün grubu için geçersiz top kayıtları.");
+    }
+    const context = await this.userRepo.getOrCreateContext(validUid);
+    const now = Date.now();
+    const expiresAt = new Date(now + 15 * 60 * 1000).toISOString();
+
+    const releaseOldAllocations = (working: Map<string, Product>, reservation: any) => {
+      const allocations = Array.isArray(reservation?.productAllocations)
+        ? reservation.productAllocations
+        : [{ productId: reservation?.productId, quantity: reservation?.quantity, rollAllocations: reservation?.rollAllocations || [] }];
+      for (const allocation of allocations) {
+        const product = working.get(allocation.productId);
+        if (!product) continue;
+        product.reservedStock = roundQty(Math.max(0, Number(product.reservedStock || 0) - Number(allocation.quantity || 0)));
+        for (const rollAllocation of allocation.rollAllocations || []) {
+          const roll = product.rolls?.find((item) => item.id === rollAllocation.rollId);
+          if (roll) roll.reservedLength = roundQty(Math.max(0, Number(roll.reservedLength || 0) - Number(rollAllocation.length || 0)));
+        }
+      }
+    };
+
+    const createAllocations = (working: Map<string, Product>) => {
+      let remaining = qty;
+      const productAllocations: Array<{ productId: string; quantity: number; rollAllocations: Array<{ rollId: string; length: number }> }> = [];
+      const ordered = productIds
+        .map((id) => working.get(id))
+        .filter((product): product is Product => Boolean(product))
+        .sort((a, b) => {
+          const dateA = String(a.createdAt || a.metadata?.entryDate || "");
+          const dateB = String(b.createdAt || b.metadata?.entryDate || "");
+          return dateA.localeCompare(dateB) || a.id.localeCompare(b.id);
+        });
+
+      for (const product of ordered) {
+        if (remaining <= 0) break;
+        const availableProductStock = roundQty(Math.max(0, Number(product.stock || 0) - Number(product.reservedStock || 0)));
+        if (availableProductStock <= 0) continue;
+
+        let allocated = 0;
+        const rollAllocations: Array<{ rollId: string; length: number }> = [];
+        if (shouldShowRolls(product) && product.rolls?.length) {
+          const balance = getRollStockBalance(product);
+          if (!balance.isBalanced) {
+            throw new Error(product.name + " için top kayıtları ile ürün stoğu uyuşmuyor. Önce stok kayıtlarını kontrol edin.");
+          }
+          let rollRemaining = roundQty(Math.min(remaining, availableProductStock));
+          for (const roll of product.rolls) {
+            const freeLength = Math.max(0, Number(roll.length || 0) - Number(roll.reservedLength || 0));
+            const amount = roundQty(Math.min(freeLength, rollRemaining));
+            if (roll.status === "available" && amount > 0) {
+              roll.reservedLength = roundQty(Number(roll.reservedLength || 0) + amount);
+              rollAllocations.push({ rollId: roll.id, length: amount });
+              allocated = roundQty(allocated + amount);
+              rollRemaining = roundQty(rollRemaining - amount);
+            }
+          }
+          if (rollRemaining > 0) {
+            throw new Error(product.name + " içindeki uygun top kayıtları beklenen metrajı karşılamıyor.");
+          }
+        } else {
+          allocated = roundQty(Math.min(remaining, availableProductStock));
+        }
+
+        if (allocated > 0) {
+          product.reservedStock = roundQty(Number(product.reservedStock || 0) + allocated);
+          productAllocations.push({ productId: product.id, quantity: allocated, rollAllocations });
+          remaining = roundQty(remaining - allocated);
+        }
+      }
+
+      if (remaining > 0) {
+        const availableTotal = roundQty(qty - remaining);
+        throw new Error("Yetersiz kullanılabilir kumaş. " + availableTotal + " m ayrılabilir; istenen " + qty + " m.");
+      }
+      return productAllocations;
+    };
+
+    if (isDemoUser(validUid)) {
+      const products = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
+      const reservations = getLocal<any[]>("stokpro_demo_reservations", []);
+      const working = new Map<string, Product>();
+      for (const id of productIds) {
+        const found = products.find((product) => product.id === id);
+        if (!found) throw new Error("Kumaş top kayıtlarından biri bulunamadı: " + id);
+        if (found.tenantId && found.tenantId !== context.tenantId) throw new Error("Kumaş topu başka firmaya ait.");
+        working.set(id, JSON.parse(JSON.stringify(found)));
+      }
+
+      const existing = reservations.find((reservation) => reservation.id === reservationId);
+      if (existing && (existing.userId !== validUid || existing.tenantId !== context.tenantId)) {
+        throw new Error("Bu sepet rezervasyonu başka bir kullanıcıya ait.");
+      }
+      if (existing?.status === "active") {
+        const extraIds = (existing.productAllocations || []).map((item: any) => item.productId).filter((id: string) => !working.has(id));
+        for (const id of extraIds) {
+          const found = products.find((product) => product.id === id);
+          if (found) working.set(id, JSON.parse(JSON.stringify(found)));
+        }
+        releaseOldAllocations(working, existing);
+      } else if (existing && existing.status !== "released" && existing.status !== "expired") {
+        throw new Error("Bu sepet rezervasyonu artık kullanılamıyor.");
+      }
+
+      const allocations = createAllocations(working);
+      const nextProducts = products.map((product) => working.get(product.id) || product);
+      const nextReservations = reservations.filter((reservation) => reservation.id !== reservationId);
+      nextReservations.push({
+        id: reservationId,
+        tenantId: context.tenantId,
+        userId: validUid,
+        productId: representativeId,
+        productIds,
+        quantity: qty,
+        unit: "Metre",
+        productAllocations: allocations,
+        status: "active",
+        createdAt: new Date(now).toISOString(),
+        expiresAt
+      });
+      setLocal("stokpro_demo_products", nextProducts);
+      setLocal("stokpro_demo_reservations", nextReservations);
+      memoryCache.invalidate("products_");
+      return working.get(representativeId)!;
+    }
+
+    await this.cleanupExpiredReservations(validUid);
+    const reservationRef = doc(this.db, "stock_reservations", reservationId);
+    const productRefs = new Map(productIds.map((id) => [id, doc(this.db, "products", id)]));
+
+    return runTransaction(this.db, async (transaction) => {
+      const reservationSnap = await transaction.get(reservationRef);
+      const productSnaps = new Map<string, any>();
+      for (const id of productIds) {
+        productSnaps.set(id, await transaction.get(productRefs.get(id)!));
+      }
+
+      const working = new Map<string, Product>();
+      for (const [id, snap] of productSnaps.entries()) {
+        if (!snap.exists()) throw new Error("Kumaş top kayıtlarından biri bulunamadı: " + id);
+        const data = snap.data();
+        if (!(data.tenantId === context.tenantId || data.userId === validUid)) {
+          throw new Error("Bu kumaş topu için rezervasyon yapma yetkiniz yok.");
+        }
+        working.set(id, { id, ...data } as Product);
+      }
+
+      let existing: any = null;
+      if (reservationSnap.exists()) {
+        existing = reservationSnap.data();
+        if (existing.userId !== validUid || existing.tenantId !== context.tenantId) {
+          throw new Error("Bu sepet rezervasyonu başka bir kullanıcıya ait.");
+        }
+        if (existing.status === "active") {
+          const extraIds = (existing.productAllocations || []).map((item: any) => item.productId).filter((id: string) => !working.has(id));
+          if (extraIds.length) throw new Error("Önceki sepet rezervasyonunun top grubu değişmiş. Sepeti yeniden oluşturun.");
+          releaseOldAllocations(working, existing);
+        } else if (existing.status !== "released" && existing.status !== "expired") {
+          throw new Error("Bu sepet rezervasyonu artık kullanılamıyor.");
+        }
+      }
+
+      const allocations = createAllocations(working);
+      for (const [id, product] of working.entries()) {
+        transaction.update(productRefs.get(id)!, {
+          reservedStock: Number(product.reservedStock || 0),
+          ...(product.rolls ? { rolls: product.rolls } : {})
+        });
+      }
+      transaction.set(reservationRef, {
+        tenantId: context.tenantId,
+        userId: validUid,
+        productId: representativeId,
+        productIds,
+        quantity: qty,
+        unit: "Metre",
+        productAllocations: allocations,
+        status: "active",
+        createdAt: new Date(now).toISOString(),
+        expiresAt
+      });
+      return working.get(representativeId)!;
+    });
+  }
+
   /**
    * Atomically holds stock for a cart line. The physical stock remains unchanged;
    * reservedStock / reservedLength / reservedQuantity reduce what other sellers can offer.
@@ -91,8 +292,12 @@ export class FirebaseSalesRepository implements SalesRepository {
     productId: string,
     quantity: number,
     reservationId: string,
-    selectedBoxId?: string
+    selectedBoxId?: string,
+    groupProductIds?: string[]
   ): Promise<Product> {
+    if (groupProductIds && new Set(groupProductIds).size > 1) {
+      return this.reserveGroupedFabricStock(uid, productId, quantity, reservationId, groupProductIds);
+    }
     const validUid = assertAuthenticated(uid, "SalesRepository.reserveStock");
     const qty = roundQty(Number(quantity));
     if (!Number.isFinite(qty) || qty <= 0) throw new Error("Rezerve edilecek miktar sıfırdan büyük olmalıdır.");
