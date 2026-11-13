@@ -1,4 +1,4 @@
-import { Product, FabricRoll } from "../types";
+import { Product, FabricRoll, ProductBox } from "../types";
 import { getAvailableStock, getAvailableRollLength, shouldShowRolls } from "./sectorConfig";
 
 const normalize = (value: unknown): string =>
@@ -74,17 +74,19 @@ function makeSyntheticRoll(product: Product, index: number): FabricRoll {
   };
 }
 
-/** Combines duplicate textile product records into one presentation row without merging Firestore documents. */
-export function groupFabricProducts(products: Product[]): Product[] {
+/** Combines explicitly related product variants for every sector, while retaining legacy textile grouping. */
+export function groupProducts(products: Product[]): Product[] {
   const groups = new Map<string, Product[]>();
   const untouched: Product[] = [];
 
   for (const product of products) {
-    if (!isFabricRecord(product)) {
+    const key = product.productFamilyId
+      ? "family:" + normalize(product.productFamilyId)
+      : isFabricRecord(product) ? "legacy-fabric:" + groupKey(product) : "";
+    if (!key) {
       untouched.push(product);
       continue;
     }
-    const key = groupKey(product);
     const list = groups.get(key) || [];
     list.push(product);
     groups.set(key, list);
@@ -102,24 +104,30 @@ export function groupFabricProducts(products: Product[]): Product[] {
     const totalStock = Number(members.reduce((sum, member) => sum + Number(member.stock || 0), 0).toFixed(3));
     const totalReserved = Number(members.reduce((sum, member) => sum + Number(member.reservedStock || 0), 0).toFixed(3));
     const flattenedRolls: FabricRoll[] = [];
+    const flattenedBoxes: ProductBox[] = [];
 
     members.forEach((member, index) => {
       if (member.rolls?.length) {
         member.rolls.forEach((roll) => {
           flattenedRolls.push({ ...roll, id: member.id + "::" + roll.id, productId: member.id });
         });
-      } else {
+      } else if (isFabricRecord(member)) {
         flattenedRolls.push(makeSyntheticRoll(member, index));
       }
+      (member.boxes || []).forEach((box) => {
+        flattenedBoxes.push({ ...box, id: member.id + "::" + box.id, productId: member.id });
+      });
     });
 
     grouped.push({
       ...representative,
-      name: displayFabricName(representative.name),
+      name: members.some(isFabricRecord) ? displayFabricName(representative.name) : representative.name,
       stock: totalStock,
       reservedStock: totalReserved,
       minStock: Math.max(...members.map((member) => Number(member.minStock || 0))),
-      rolls: flattenedRolls,
+      rolls: flattenedRolls.length ? flattenedRolls : representative.rolls,
+      boxes: flattenedBoxes.length ? flattenedBoxes : representative.boxes,
+      productFamilyId: representative.productFamilyId || undefined,
       groupProductIds: members.map((member) => member.id),
       groupMembers: members,
     });
@@ -127,6 +135,8 @@ export function groupFabricProducts(products: Product[]): Product[] {
 
   return grouped.sort((a, b) => a.name.localeCompare(b.name, "tr"));
 }
+
+export const groupFabricProducts = groupProducts;
 
 export function getGroupedAvailableStock(product: Product): number {
   if (product.groupProductIds?.length && product.groupMembers?.length) {
