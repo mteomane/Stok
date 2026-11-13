@@ -2335,6 +2335,7 @@ export function Inventory({
             setQuickAddInitialName(undefined);
             if (onRefreshData) await onRefreshData();
           }}
+          onUpdateProduct={onUpdateProduct}
           onSelectExistingProduct={(existingProd) => {
             setShowQuickAddModal(false);
             setReplenishProduct(existingProd);
