@@ -183,6 +183,10 @@ export type ProductMetadata = TextileMetadata & FoodMetadata & SparePartsMetadat
 
 export interface Product {
   id: string;
+  /** Stable family key shared by all variants/stock sub-records of one sellable product. */
+  productFamilyId?: string;
+  /** Human-readable child/variant label (e.g. color, size, model, lot, pack). */
+  variantLabel?: string;
   tenantId?: string; // Multi-tenant company ID
   name: string;
   sku: string;
