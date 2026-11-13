@@ -1187,6 +1187,32 @@ export function Inventory({
                     className="bg-slate-50/90 border-t border-slate-200 p-4 space-y-4 animate-fade-in"
                     onClick={(e) => e.stopPropagation()}
                   >
+                    {/* Universal product variants stay hidden until the parent row is expanded. */}
+                    {p.groupMembers && p.groupMembers.length > 1 && (
+                      <div className="rounded-xl border border-indigo-100 bg-white overflow-hidden">
+                        <div className="px-3 py-2 bg-indigo-50/70 border-b border-indigo-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-700">Alt kırılımlar</span>
+                          <span className="text-[10px] text-indigo-600 font-semibold">{p.groupMembers.length} varyant · toplam {getGroupedAvailableStock(p)} {p.unit || "Adet"}</span>
+                        </div>
+                        <div className="divide-y divide-slate-100">
+                          {p.groupMembers.map((member) => (
+                            <div key={member.id} className="px-3 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-bold text-slate-800 truncate">{member.variantLabel || member.name}</div>
+                                <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                                  {member.sku || "SKU yok"}{member.barcode ? " · " + member.barcode : ""}
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <div className="text-xs font-bold text-slate-800">{getAvailableStock(member)} {member.unit || p.unit || "Adet"}</div>
+                                <div className="text-[10px] text-slate-500">{formatCurrency(member.price)}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Dynamic Sector Attributes & Smart Badges */}
                     {((p.metadata && Object.keys(p.metadata).length > 0) || (p.attributes && Object.keys(p.attributes).length > 0)) && (
                       <div>
