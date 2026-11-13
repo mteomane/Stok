@@ -131,6 +131,12 @@ export class FirebaseSalesRepository implements SalesRepository {
           const dateB = String((b as any).createdAt || b.metadata?.entryDate || "");
           return dateA.localeCompare(dateB) || a.id.localeCompare(b.id);
         });
+      if (ordered.length !== productIds.length) throw new Error("Ürün ailesindeki varyantlardan biri bulunamadı.");
+      const familyUnits = new Set(ordered.map((product) => String(product.unit || "Adet").trim().toLocaleLowerCase("tr-TR")));
+      if (familyUnits.size > 1) throw new Error("Aynı ürün ailesindeki tüm varyantların stok takip birimi aynı olmalıdır.");
+      if (ordered.some((product) => product.boxes && product.boxes.length > 0)) {
+        throw new Error("Koli bazlı ürünlerde satış için lütfen doğrudan ilgili alt varyantı seçin.");
+      }
 
       for (const product of ordered) {
         if (remaining <= 0) break;
@@ -212,7 +218,7 @@ export class FirebaseSalesRepository implements SalesRepository {
         productId: representativeId,
         productIds,
         quantity: qty,
-        unit: "Metre",
+        unit: working.get(representativeId)?.unit || "Adet",
         productAllocations: allocations,
         status: "active",
         createdAt: new Date(now).toISOString(),
@@ -1290,15 +1296,15 @@ export class FirebaseSalesRepository implements SalesRepository {
                   userId: uid,
                   productId: source.id,
                   productName: source.name,
-                                    type: "roll_cut",
+                                    type: shouldShowRolls(source) ? "roll_cut" : "out",
                   quantity: amount,
                   previousStock: roundQty(Number(source.stock || 0) + amount),
                   newStock: roundQty(Number(source.stock || 0)),
-                  unit: "Metre",
+                  unit: shouldShowRolls(source) ? "Metre" : (source.unit || "Adet"),
                   referenceType: "sale",
                   referenceId: saleRef.id,
                   timestamp: new Date().toISOString(),
-                  notes: "Satış Fişi #" + saleRef.id + " - Kumaş grup metraj çıkışı"
+                  notes: "Satış Fişi #" + saleRef.id + (shouldShowRolls(source) ? " - Grup metraj çıkışı" : " - Ürün varyantı stok çıkışı")
                 };
                 if (source.warehouseId) sourceMovement.warehouseId = source.warehouseId;
                 stockMovementsToCreate.push(sourceMovement as StockMovement);
