@@ -51,8 +51,8 @@ function groupKey(product: Product): string {
 }
 
 function stableTopOrder(a: Product, b: Product): number {
-  const da = String(a.createdAt || a.metadata?.entryDate || "");
-  const db = String(b.createdAt || b.metadata?.entryDate || "");
+  const da = String((a as any).createdAt || a.metadata?.entryDate || "");
+  const db = String((b as any).createdAt || b.metadata?.entryDate || "");
   return da.localeCompare(db) || a.id.localeCompare(b.id);
 }
 
@@ -70,7 +70,7 @@ function makeSyntheticRoll(product: Product, index: number): FabricRoll {
     reservedLength: reserved,
     soldLength: 0,
     status: Number(product.stock || 0) <= 0 ? "sold" : "available",
-    createdAt: String(product.createdAt || ""),
+    createdAt: String((product as any).createdAt || ""),
   };
 }
 
