@@ -1,5 +1,8 @@
 import React, { useMemo } from "react";
 import { Product, Sale } from "../types";
+import { isCancelledSale } from "../lib/salesMetrics";
+import { getAvailableStock, shouldShowRolls } from "../lib/sectorConfig";
+import { groupFabricProducts, getGroupedAvailableStock } from "../lib/productGrouping";
 import { 
   TrendingUp, 
   Box, 
@@ -37,19 +40,23 @@ export function Dashboard({
     outOfStockCount,
     criticalDeficit,
     stockHealthRate,
-    recentSales
+    recentSales,
+    completedSalesCount
   } = useMemo(() => {
-    const totalSalesCiro = sales.reduce((sum, s) => sum + s.totalAmount, 0);
-    const totalProductsCount = products.length;
-    const totalStockQuantity = products.reduce((sum, p) => sum + p.stock, 0);
-    const lowStockProducts = products.filter((p) => p.stock <= p.minStock);
-    const outOfStockCount = lowStockProducts.filter((p) => p.stock <= 0).length;
-    const criticalDeficit = lowStockProducts.reduce((sum, p) => sum + Math.max(0, p.minStock - p.stock), 0);
+    const completedSales = sales.filter((sale) => !isCancelledSale(sale));
+    const totalSalesCiro = completedSales.reduce((sum, sale) => sum + sale.totalAmount, 0);
+    const completedSalesCount = completedSales.length;
+    const displayProducts = groupFabricProducts(products);
+    const totalProductsCount = displayProducts.length;
+    const totalStockQuantity = displayProducts.reduce((sum, p) => sum + getGroupedAvailableStock(p), 0);
+    const lowStockProducts = displayProducts.filter((p) => getGroupedAvailableStock(p) <= p.minStock);
+    const outOfStockCount = lowStockProducts.filter((p) => getGroupedAvailableStock(p) <= 0).length;
+    const criticalDeficit = lowStockProducts.reduce((sum, p) => sum + Math.max(0, p.minStock - getAvailableStock(p)), 0);
     const stockHealthRate = totalProductsCount > 0 
       ? Math.round(((totalProductsCount - lowStockProducts.length) / totalProductsCount) * 100) 
       : 100;
 
-    const recentSales = [...sales]
+    const recentSales = [...completedSales]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 5);
 
@@ -61,7 +68,8 @@ export function Dashboard({
       outOfStockCount,
       criticalDeficit,
       stockHealthRate,
-      recentSales
+      recentSales,
+      completedSalesCount
     };
   }, [products, sales]);
 
@@ -102,7 +110,7 @@ export function Dashboard({
             {formatCurrency(totalSalesCiro)}
           </span>
           <span className="text-[11px] text-emerald-600 font-medium mt-1.5 flex items-center gap-1">
-            {sales.length} başarılı satış kaydı
+            {completedSalesCount} tamamlanan satış kaydı
           </span>
         </div>
 
@@ -125,9 +133,9 @@ export function Dashboard({
           <div className="absolute right-3 top-3 bg-blue-50 p-2 rounded-lg text-blue-600 group-hover:scale-105 transition-transform">
             <Layers className="w-5 h-5" />
           </div>
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Toplam Stok</span>
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Satılabilir Stok</span>
           <span className="text-2xl font-bold text-slate-900 mt-2 block tracking-tight">
-            {totalStockQuantity} Adet
+            {totalStockQuantity}
           </span>
           <span className="text-[11px] text-blue-600 font-medium mt-1.5 block">
             Depodaki toplam envanter
@@ -277,9 +285,9 @@ export function Dashboard({
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {lowStockProducts.slice(0, 6).map((p) => {
-                const deficit = Math.max(0, p.minStock - p.stock);
-                const percent = p.minStock > 0 ? Math.min(100, Math.round((p.stock / p.minStock) * 100)) : 0;
-                const isZero = p.stock <= 0;
+                const deficit = Math.max(0, p.minStock - getAvailableStock(p));
+                const percent = p.minStock > 0 ? Math.min(100, Math.round((getAvailableStock(p) / p.minStock) * 100)) : 0;
+                const isZero = getAvailableStock(p) <= 0;
 
                 return (
                   <div
@@ -312,7 +320,7 @@ export function Dashboard({
                       <div className="mt-3 space-y-1">
                         <div className="flex justify-between text-[11px]">
                           <span className="font-bold text-slate-600">
-                            Stok: <strong className={isZero ? "text-rose-600" : "text-amber-600"}>{p.stock}</strong> / Min: {p.minStock}
+                            Stok: <strong className={isZero ? "text-rose-600" : "text-amber-600"}>{getAvailableStock(p)} {shouldShowRolls(p) ? "m" : (p.unit || "Adet")}</strong> / Min: {p.minStock}
                           </span>
                           <span className="text-[10px] font-bold text-slate-400">%{percent}</span>
                         </div>
@@ -422,7 +430,7 @@ export function Dashboard({
                     </div>
                     <div className="flex items-center gap-2.5 flex-shrink-0">
                       <div className="text-right">
-                        <span className="text-sm font-black text-rose-600 block">{p.stock} Adet</span>
+                        <span className="text-sm font-black text-rose-600 block">{getAvailableStock(p)} {shouldShowRolls(p) ? "m" : (p.unit || "Adet")}</span>
                         <span className="text-[10px] font-bold text-slate-400 uppercase">Min: {p.minStock}</span>
                       </div>
                       <button

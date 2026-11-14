@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Product, CartItem, Customer, Sale, FabricRoll, ProductBox } from "../types";
+import { Product, CartItem, Customer, Sale, ProductBox } from "../types";
 import { auth } from "../lib/firebase";
 import { getCustomers, roundQty } from "../lib/firestoreService";
 import { 
@@ -14,7 +14,6 @@ import {
   CreditCard,
   DollarSign,
   Scissors,
-  Layers,
   Loader2,
   Camera,
   Barcode as BarcodeIcon,
@@ -26,9 +25,13 @@ import {
 } from "lucide-react";
 import { QRScanner } from "./QRScanner";
 import { ReceiptPrintModal } from "./ReceiptPrintModal";
+import { getAvailableBoxQuantity, getAvailableRollLength, getAvailableStock, getRollStockBalance, shouldShowRolls } from "../lib/sectorConfig";
+import { groupFabricProducts } from "../lib/productGrouping";
 
 interface QuickSaleProps {
   products: Product[];
+  onReserveStock: (productId: string, quantity: number, reservationId: string, selectedBoxId?: string, groupProductIds?: string[]) => Promise<Product>;
+  onReleaseStockReservation: (reservationId: string) => Promise<void>;
   onRecordSale: (
     items: { 
       productId: string; 
@@ -36,6 +39,8 @@ interface QuickSaleProps {
       selectedRollId?: string; 
       cutLength?: number;
       selectedBoxId?: string;
+      reservationId?: string;
+      productIds?: string[];
     }[], 
     customerId?: string, 
     amountPaid?: number,
@@ -44,21 +49,23 @@ interface QuickSaleProps {
   ) => Promise<any>;
 }
 
-export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
+export function QuickSale({ products, onRecordSale, onReserveStock, onReleaseStockReservation }: QuickSaleProps) {
   const [cart, setCart] = useState<CartItem[]>([]);
+  const groupedProducts = React.useMemo(() => groupFabricProducts(products), [products]);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [expandedFamilyId, setExpandedFamilyId] = useState<string | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isReserving, setIsReserving] = useState(false);
   const [currentIdempotencyKey, setCurrentIdempotencyKey] = useState<string | null>(null);
   const [showCameraScanner, setShowCameraScanner] = useState(false);
   const [scannerFeedback, setScannerFeedback] = useState<string | null>(null);
 
-  // Roll & Box selection states
-  const [selectedRollId, setSelectedRollId] = useState<string>("");
+  // Box selection remains explicit; fabric rolls are allocated automatically by FIFO.
   const [selectedBoxId, setSelectedBoxId] = useState<string>("");
   const [cutLength, setCutLength] = useState<string>("");
 
@@ -72,6 +79,24 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
   // Receipt printing modal state
   const [completedSale, setCompletedSale] = useState<Sale | null>(null);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
+
+  // Keep the open selector and cart lines synchronized with shared stock updates from other sellers.
+  useEffect(() => {
+    setSelectedProduct((current) => {
+      if (!current) return current;
+      return groupedProducts.find((product) => product.id === current.id) || current;
+    });
+    setCart((current) => {
+      let changed = false;
+      const next = current.map((item) => {
+        const latest = groupedProducts.find((product) => product.id === item.product.id);
+        if (!latest || latest === item.product) return item;
+        changed = true;
+        return { ...item, product: latest };
+      });
+      return changed ? next : current;
+    });
+  }, [groupedProducts]);
 
   // Load customers for checkout selection
   const fetchCustomers = async () => {
@@ -95,15 +120,15 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
   // Extract unique categories for quick filter
   const categories = React.useMemo(() => {
     const set = new Set<string>();
-    products.forEach((p) => {
+    groupedProducts.forEach((p) => {
       if (p.category) set.add(p.category);
     });
     return ["all", ...Array.from(set)];
-  }, [products]);
+  }, [groupedProducts]);
 
   // Filtered products: Visible even when search is empty!
   const displayedProducts = React.useMemo(() => {
-    return products.filter((p) => {
+    return groupedProducts.filter((p) => {
       // Category filter
       if (selectedCategory !== "all" && p.category?.toLowerCase() !== selectedCategory.toLowerCase()) {
         return false;
@@ -112,127 +137,115 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
       // Search term filter
       if (!search.trim()) return true;
       const term = search.trim().toLowerCase();
-      return (
-        p.name.toLowerCase().includes(term) ||
-        (p.sku && p.sku.toLowerCase().includes(term)) ||
-        (p.barcode && p.barcode.toLowerCase().includes(term)) ||
-        (p.brand && p.brand.toLowerCase().includes(term)) ||
-        p.id.toLowerCase().includes(term)
+      const members = p.groupMembers?.length ? p.groupMembers : [p];
+      return members.some((member) =>
+        member.name.toLowerCase().includes(term) ||
+        (member.sku && member.sku.toLowerCase().includes(term)) ||
+        (member.barcode && member.barcode.toLowerCase().includes(term)) ||
+        (member.brand && member.brand.toLowerCase().includes(term)) ||
+        member.id.toLowerCase().includes(term)
       );
     });
-  }, [products, search, selectedCategory]);
+  }, [groupedProducts, search, selectedCategory]);
 
   const selectProductToConfigure = (prod: Product) => {
     setSelectedProduct(prod);
-    setSelectedRollId("");
     setSelectedBoxId("");
-    setCutLength("");
+    setCutLength(shouldShowRolls(prod) ? "1" : "");
     setQuantity(1);
     setError(null);
   };
 
-  const addToCart = (product: Product, qty: number) => {
+  const createReservationId = () => "cart_" + (auth.currentUser?.uid || "demo") + "_" + crypto.randomUUID().replace(/-/g, "").slice(0, 24);
+
+  const addToCart = async (product: Product, qty: number) => {
+    if (isReserving || isSubmitting) return;
     setError(null);
     setSuccess(false);
-    setCurrentIdempotencyKey(null);
+    setIsReserving(true);
 
-    const isFabric = 
-      product.category?.toLowerCase() === "kumaş" || 
-      product.category?.toLowerCase() === "kumas" || 
-      (product.rolls && product.rolls.length > 0);
+    try {
+      const isFabric = shouldShowRolls(product);
+      const hasBoxes = product.boxes && product.boxes.length > 0;
+      const finalBoxId = hasBoxes && selectedBoxId ? selectedBoxId : undefined;
+      const finalCutLength = isFabric ? Number(cutLength || qty) : undefined;
+      const addedQuantity = finalCutLength !== undefined ? finalCutLength : qty;
 
-    const hasBoxes = product.boxes && product.boxes.length > 0;
+      if (!Number.isFinite(addedQuantity) || addedQuantity <= 0) {
+        throw new Error(isFabric ? "Lütfen geçerli bir kumaş kesim miktarı girin." : "Lütfen geçerli bir miktar girin.");
+      }
 
-    const finalRollId = isFabric && selectedRollId ? selectedRollId : undefined;
-    const finalBoxId = hasBoxes && selectedBoxId ? selectedBoxId : undefined;
-    const finalCutLength = isFabric && cutLength ? parseFloat(cutLength) : undefined;
-
-    // Validate roll stock
-    if (finalRollId) {
-      const selectedRoll = product.rolls?.find(r => r.id === finalRollId);
-      if (selectedRoll) {
-        const requiredAmt = finalCutLength || qty;
-        if (selectedRoll.length < requiredAmt) {
-          setError(`Seçilen topta yeterli kumaş yok! Kalan: ${selectedRoll.length} m`);
-          return;
+      if (isFabric && product.rolls && product.rolls.length > 0) {
+        const balance = getRollStockBalance(product);
+        if (!balance.isBalanced) {
+          throw new Error("Kumaş stok kontrolü gerekli: ürün stoğu " + balance.productStock + " m, top kayıtları toplamı " + balance.trackedRollLength + " m. Satıştan önce Topları Yönet bölümünden kayıtları kontrol edin.");
         }
       }
-    } 
-    // Validate box stock
-    else if (finalBoxId) {
-      const selectedBox = product.boxes?.find(b => b.id === finalBoxId);
-      if (selectedBox) {
-        if (selectedBox.quantity < qty) {
-          setError(`Seçilen kolide yeterli adet yok! Kalan: ${selectedBox.quantity} adet`);
-          return;
+
+      const existingIndex = cart.findIndex((item) => item.product.id === product.id && item.selectedBoxId === finalBoxId);
+      const existingItem = existingIndex >= 0 ? cart[existingIndex] : undefined;
+      const desiredQuantity = roundQty((existingItem?.quantity || 0) + addedQuantity);
+      const alreadyHeldByThisCart = Number(existingItem?.quantity || 0);
+      const availableForThisCart = roundQty(getAvailableStock(product) + alreadyHeldByThisCart);
+      if (isFabric && product.rolls?.length) {
+        const availableRolls = product.rolls.reduce((sum, roll) => sum + getAvailableRollLength(roll), 0);
+        if (roundQty(availableRolls + alreadyHeldByThisCart) < desiredQuantity) {
+          throw new Error("Satışa uygun kumaş toplarında yeterli serbest metraj bulunmuyor.");
         }
       }
-    } else {
-      if (product.stock < qty) {
-        setError(`Stok yetersiz! Mevcut stok: ${product.stock}`);
-        return;
-      }
-    }
-
-    const boxObj = finalBoxId ? product.boxes?.find(b => b.id === finalBoxId) : undefined;
-
-    const existingIndex = cart.findIndex(
-      (item) => 
-        item.product.id === product.id && 
-        item.selectedRollId === finalRollId &&
-        item.selectedBoxId === finalBoxId
-    );
-
-    if (existingIndex !== -1) {
-      const currentQtyInCart = cart[existingIndex].quantity;
-      const updatedCart = [...cart];
-      
-      if (finalCutLength) {
-        const newCutLen = roundQty((updatedCart[existingIndex].cutLength || 0) + finalCutLength);
-        if (finalRollId) {
-          const selectedRoll = product.rolls?.find(r => r.id === finalRollId);
-          if (selectedRoll && selectedRoll.length < newCutLen) {
-            setError(`Seçilen topta yeterli kumaş yok! Toplam istenen: ${newCutLen} m`);
-            return;
-          }
+      if (finalBoxId) {
+        const selectedBox = product.boxes?.find(box => box.id === finalBoxId);
+        const availableInBox = selectedBox ? getAvailableBoxQuantity(selectedBox) + alreadyHeldByThisCart : 0;
+        if (!selectedBox || availableInBox < desiredQuantity) {
+          throw new Error("Seçilen kolide bu miktarı ayıracak yeterli serbest stok bulunmuyor.");
         }
-        updatedCart[existingIndex].cutLength = newCutLen;
-        updatedCart[existingIndex].quantity = newCutLen;
+      }
+      if (availableForThisCart < desiredQuantity) {
+        throw new Error("Yetersiz kullanılabilir stok. Şu anda en fazla " + availableForThisCart + " " + (isFabric ? "metre" : (product.unit || "adet")) + " ayırabilirsiniz.");
+      }
+
+      // Atomically hold stock before showing the line in the cart.
+      const reservationId = existingItem?.reservationId || createReservationId();
+      await onReserveStock(product.id, desiredQuantity, reservationId, finalBoxId, product.groupProductIds);
+
+      if (existingIndex >= 0) {
+        setCart((previous) => previous.map((item, index) => index === existingIndex
+          ? {
+              ...item,
+              product,
+              quantity: desiredQuantity,
+              cutLength: isFabric ? desiredQuantity : undefined,
+              reservationId,
+              unit: isFabric ? "Metre" : (product.unit || "Adet")
+            }
+          : item));
       } else {
-        const newQty = roundQty(currentQtyInCart + qty);
-        if (finalBoxId && boxObj && boxObj.quantity < newQty) {
-          setError(`Seçilen kolide yeterli adet yok! Maksimum: ${boxObj.quantity}`);
-          return;
-        }
-        if (product.stock < newQty) {
-          setError(`Stok limiti aşılıyor! Maksimum: ${product.stock}`);
-          return;
-        }
-        updatedCart[existingIndex].quantity = newQty;
+        setCart((previous) => [
+          ...previous,
+          {
+            product,
+            quantity: roundQty(addedQuantity),
+            selectedRollId: undefined,
+            cutLength: finalCutLength !== undefined ? roundQty(finalCutLength) : undefined,
+            selectedBoxId: finalBoxId,
+            selectedBoxNumber: finalBoxId ? product.boxes?.find(b => b.id === finalBoxId)?.boxNumber : undefined,
+            reservationId,
+            unit: isFabric ? "Metre" : (product.unit || "Adet")
+          }
+        ]);
       }
-      setCart(updatedCart);
-    } else {
-      setCart([
-        ...cart,
-        {
-          product,
-          quantity: finalCutLength !== undefined ? roundQty(finalCutLength) : roundQty(qty),
-          selectedRollId: finalRollId,
-          cutLength: finalCutLength !== undefined ? roundQty(finalCutLength) : undefined,
-          selectedBoxId: finalBoxId,
-          selectedBoxNumber: boxObj?.boxNumber,
-          unit: product.unit || (isFabric ? "metre" : "adet")
-        }
-      ]);
-    }
 
-    // Reset selection
-    setSearch("");
-    setSelectedProduct(null);
-    setQuantity(1);
-    setSelectedRollId("");
-    setSelectedBoxId("");
-    setCutLength("");
+      setCurrentIdempotencyKey(null);
+      setSearch("");
+      setSelectedProduct(null);
+      setQuantity(1);
+      setSelectedBoxId("");
+      setCutLength("");
+    } catch (err: any) {
+      setError(err?.message || "Stok sepete ayrılamadı. Lütfen tekrar deneyin.");
+    } finally {
+      setIsReserving(false);
+    }
   };
 
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -241,19 +254,20 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
       const term = search.trim().toLowerCase();
       if (!term) return;
 
-      const exactMatch = products.find(
+      const exactMatch = groupedProducts.find(
         (p) =>
           (p.barcode && p.barcode.trim().toLowerCase() === term) ||
           (p.sku && p.sku.trim().toLowerCase() === term) ||
-          p.id.toLowerCase() === term
+          p.id.toLowerCase() === term ||
+          p.groupMembers?.some((member) => member.barcode?.trim().toLowerCase() === term || member.sku?.trim().toLowerCase() === term || member.id.toLowerCase() === term)
       );
 
       if (exactMatch) {
-        addToCart(exactMatch, 1);
+        void addToCart(exactMatch, 1);
         setSearch("");
         setSelectedProduct(null);
       } else if (displayedProducts.length === 1) {
-        addToCart(displayedProducts[0], 1);
+        void addToCart(displayedProducts[0], 1);
         setSearch("");
         setSelectedProduct(null);
       }
@@ -262,15 +276,16 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
 
   const handleCameraScanSuccess = (decodedText: string) => {
     const clean = decodedText.trim().toLowerCase();
-    const matched = products.find(
+    const matched = groupedProducts.find(
       (p) =>
         (p.barcode && p.barcode.trim().toLowerCase() === clean) ||
         (p.sku && p.sku.trim().toLowerCase() === clean) ||
-        p.id.toLowerCase() === clean
+        p.id.toLowerCase() === clean ||
+        p.groupMembers?.some((member) => member.barcode?.trim().toLowerCase() === clean || member.sku?.trim().toLowerCase() === clean || member.id.toLowerCase() === clean)
     );
 
     if (matched) {
-      addToCart(matched, 1);
+      void addToCart(matched, 1);
       setShowCameraScanner(false);
       setScannerFeedback(`"${matched.name}" sepete eklendi!`);
       setTimeout(() => setScannerFeedback(null), 3000);
@@ -279,47 +294,61 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
     }
   };
 
-  const updateCartQuantity = (productId: string, newQty: number, rollId?: string, boxId?: string) => {
+  const updateCartQuantity = async (productId: string, newQty: number, rollId?: string, boxId?: string) => {
     setError(null);
     setCurrentIdempotencyKey(null);
-    const cartItem = cart.find(
-      (item) => item.product.id === productId && item.selectedRollId === rollId && item.selectedBoxId === boxId
-    );
+    const cartItem = cart.find((item) => item.product.id === productId && item.selectedRollId === rollId && item.selectedBoxId === boxId);
     if (!cartItem) return;
 
     const roundedQty = roundQty(newQty);
     if (roundedQty <= 0) {
-      removeFromCart(productId, rollId, boxId);
+      await removeFromCart(productId, rollId, boxId);
       return;
     }
 
-    if (cartItem.selectedBoxId) {
-      const box = cartItem.product.boxes?.find(b => b.id === cartItem.selectedBoxId);
-      if (box && box.quantity < roundedQty) {
-        setError(`Kolide yeterli adet yok! Maksimum: ${box.quantity}`);
-        return;
+    const availableForThisLine = roundQty(getAvailableStock(cartItem.product) + Number(cartItem.quantity || 0));
+    if (roundedQty > availableForThisLine) {
+      setError(cartItem.product.name + " için yalnızca " + availableForThisLine + " " + (shouldShowRolls(cartItem.product) ? "metre" : (cartItem.product.unit || "adet")) + " ayırabilirsiniz.");
+      return;
+    }
+
+    try {
+      if (cartItem.reservationId) {
+        await onReserveStock(productId, roundedQty, cartItem.reservationId, cartItem.selectedBoxId, cartItem.product.groupProductIds);
       }
-    } else if (cartItem.product.stock < roundedQty) {
-      setError(`${cartItem.product.name} için stok yetersiz! Maksimum stok: ${cartItem.product.stock}`);
-      return;
-    }
-
-    setCart(
-      cart.map((item) =>
+      setCart((previous) => previous.map((item) =>
         item.product.id === productId && item.selectedRollId === rollId && item.selectedBoxId === boxId
-          ? { ...item, quantity: roundedQty }
+          ? { ...item, quantity: roundedQty, cutLength: item.cutLength !== undefined ? roundedQty : undefined }
           : item
-      )
-    );
+      ));
+    } catch (err: any) {
+      setError(err?.message || "Sepet miktarı güncellenemedi.");
+    }
   };
 
-  const removeFromCart = (productId: string, rollId?: string, boxId?: string) => {
+  const removeFromCart = async (productId: string, rollId?: string, boxId?: string) => {
     setCurrentIdempotencyKey(null);
-    setCart(
-      cart.filter(
-        (item) => !(item.product.id === productId && item.selectedRollId === rollId && item.selectedBoxId === boxId)
-      )
-    );
+    const item = cart.find((entry) => entry.product.id === productId && entry.selectedRollId === rollId && entry.selectedBoxId === boxId);
+    setCart((previous) => previous.filter((entry) =>
+      !(entry.product.id === productId && entry.selectedRollId === rollId && entry.selectedBoxId === boxId)
+    ));
+    if (item?.reservationId) {
+      try {
+        await onReleaseStockReservation(item.reservationId);
+      } catch (err) {
+        console.warn("Cart reservation release notice:", err);
+        setError("Ürün sepetten çıkarıldı; stok rezervasyonunun serbest bırakılması henüz doğrulanamadı.");
+      }
+    }
+  };
+
+  const clearCart = async () => {
+    const reservationIds = cart.map(item => item.reservationId).filter((id): id is string => Boolean(id));
+    setCart([]);
+    setCurrentIdempotencyKey(null);
+    await Promise.all(reservationIds.map(id => onReleaseStockReservation(id).catch(err => {
+      console.warn("Cart reservation release notice:", err);
+    })));
   };
 
   const cartTotal = cart.reduce((sum, item) => {
@@ -368,6 +397,8 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
         selectedRollId: item.selectedRollId,
         cutLength: item.cutLength,
         selectedBoxId: item.selectedBoxId,
+        reservationId: item.reservationId,
+        productIds: item.product.groupProductIds,
       }));
 
       const result = await onRecordSale(
@@ -413,6 +444,13 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
       setIsSubmitting(false);
     }
   };
+
+  const selectedProductCartHold = selectedProduct
+    ? cart.filter(item => item.product.id === selectedProduct.id).reduce((sum, item) => sum + Number(item.quantity || 0), 0)
+    : 0;
+  const selectedProductAvailable = selectedProduct
+    ? roundQty(getAvailableStock(selectedProduct) + selectedProductCartHold)
+    : 0;
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(val);
@@ -492,6 +530,29 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                 placeholder="Barkod okutun veya ürün adı yazın..."
                 className="w-full pl-10 pr-24 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 font-medium"
               />
+              {search.trim() && (
+                <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden max-h-72 overflow-y-auto">
+                  {displayedProducts.length === 0 ? (
+                    <div className="px-3 py-3 text-xs text-slate-500">Bu aramayla eşleşen ürün bulunamadı.</div>
+                  ) : displayedProducts.slice(0, 8).map((product) => (
+                    <button
+                      type="button"
+                      key={product.id}
+                      onClick={() => {
+                        selectProductToConfigure(product);
+                        setSearch("");
+                      }}
+                      className="w-full px-3 py-2.5 text-left hover:bg-indigo-50 border-b last:border-b-0 border-slate-100 flex items-center justify-between gap-3"
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-xs font-bold text-slate-800 truncate">{product.name}</span>
+                        <span className="block text-[10px] text-slate-400 truncate">{product.sku} · {product.category}</span>
+                      </span>
+                      <span className="text-xs font-black text-emerald-700 whitespace-nowrap">{getAvailableStock(product)} {shouldShowRolls(product) ? "m" : (product.unit || "ad")}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => setShowCameraScanner(true)}
@@ -544,55 +605,25 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                 <div className="text-right">
                   <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">Mevcut Stok</span>
                   <span className="text-lg font-black text-slate-800 block">
-                    {selectedProduct.stock} {selectedProduct.unit || "Adet"}
+                    {getAvailableStock(selectedProduct)} {shouldShowRolls(selectedProduct) ? "Metre" : (selectedProduct.unit || "Adet")}
                   </span>
                 </div>
               </div>
 
-              {/* 1. KUMAŞ RULO SEÇİMİ */}
-              {((selectedProduct.category?.toLowerCase() === "kumaş" || selectedProduct.category?.toLowerCase() === "kumas") || (selectedProduct.rolls && selectedProduct.rolls.length > 0)) && (
-                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3 text-xs">
-                  <span className="font-bold text-slate-700 flex items-center gap-1.5 border-b border-slate-200 pb-1.5">
-                    <Scissors className="w-4 h-4 text-indigo-600" />
-                    Kumaş Topu / Rulo Seçimi
-                  </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Top / Rulo Seçimi</label>
-                      <select
-                        value={selectedRollId}
-                        onChange={(e) => {
-                          const rollId = e.target.value;
-                          setSelectedRollId(rollId);
-                          const matchedRoll = selectedProduct.rolls?.find(r => r.id === rollId);
-                          if (matchedRoll) {
-                            setCutLength(String(matchedRoll.length));
-                            setQuantity(Math.ceil(matchedRoll.length));
-                          } else {
-                            setCutLength("");
-                            setQuantity(1);
-                          }
-                        }}
-                        className="w-full p-2 border border-slate-200 rounded-lg bg-white focus:outline-none text-xs font-medium"
-                      >
-                        <option value="">Otomatik Sıralı Eksiltme (FIFO - En Eski Top)</option>
-                        {selectedProduct.rolls
-                          ?.filter((r) => r.status === "available" && r.length > 0)
-                          .map((r) => (
-                            <option key={r.id} value={r.id}>
-                              {r.rollNumber} {r.colorName ? `(${r.colorName})` : ""} - Kalan: {r.length} m
-                            </option>
-                          ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
-                        Kesim Boyu (Metre)
+              {/* Fabric stock is displayed as one product; physical rolls stay behind the scenes and are consumed FIFO. */}
+              {shouldShowRolls(selectedProduct) && (
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <Scissors className="w-4 h-4 text-indigo-600 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">
+                        Kesim Miktarı (Metre)
                       </label>
                       <input
                         type="number"
+                        min="0.1"
                         step="0.1"
+                        max={selectedProductAvailable}
                         value={cutLength}
                         onChange={(e) => {
                           const val = e.target.value;
@@ -602,17 +633,13 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                             setQuantity(Math.ceil(parsedVal));
                           }
                         }}
-                        placeholder={`Maks: ${
-                          selectedRollId 
-                            ? (selectedProduct.rolls?.find(r => r.id === selectedRollId)?.length || selectedProduct.stock) 
-                            : selectedProduct.stock
-                        } m`}
+                        placeholder={`Satılabilir: ${selectedProductAvailable} m`}
                         className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
                       />
                     </div>
                   </div>
-                  <span className="text-[10px] text-indigo-600 block leading-tight font-medium">
-                    Belirli bir top seçildiğinde o toptan kesim yapılır; seçilmezse en eski toplardan sıralı düşülür.
+                  <span className="text-[10px] text-indigo-700 block leading-tight font-medium">
+                    Toplar tek tek seçilmez. Satış, en eski uygun kumaş topundan başlayarak otomatik FIFO sırasıyla karşılanır.
                   </span>
                 </div>
               )}
@@ -658,7 +685,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                         <input
                           type="number"
                           min="1"
-                          max={selectedBoxId ? (selectedProduct.boxes.find(b => b.id === selectedBoxId)?.quantity || selectedProduct.stock) : selectedProduct.stock}
+                          max={selectedBoxId ? (getAvailableBoxQuantity(selectedProduct.boxes.find(b => b.id === selectedBoxId) || { quantity: 0 }) + selectedProductCartHold) : selectedProductAvailable}
                           value={quantity}
                           onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
                           className="flex-1 text-xs font-bold text-center bg-transparent outline-none"
@@ -688,7 +715,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
               )}
 
               {/* 3. STANDART MİKTAR SEÇİMİ (Kumaş veya Koli değilse) */}
-              {!(selectedProduct.category?.toLowerCase() === "kumaş" || selectedProduct.category?.toLowerCase() === "kumas") &&
+              {!shouldShowRolls(selectedProduct) &&
                !(selectedProduct.boxes && selectedProduct.boxes.length > 0) && (
                 <div>
                   <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1">
@@ -729,7 +756,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                         type="button"
                         onClick={() => {
                           const step = (selectedProduct.unit?.toLowerCase() === "kg" || selectedProduct.unit?.toLowerCase() === "litre") ? 0.5 : 1;
-                          setQuantity(Math.min(selectedProduct.stock, roundQty(quantity + step)));
+                          setQuantity(Math.min(selectedProductAvailable, roundQty(quantity + step)));
                         }}
                         className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 active:scale-90 transition-all cursor-pointer"
                       >
@@ -745,13 +772,24 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                 </div>
               )}
 
+              {selectedProduct && shouldShowRolls(selectedProduct) && selectedProduct.rolls?.length ? (() => {
+                const balance = getRollStockBalance(selectedProduct);
+                return !balance.isBalanced ? (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
+                    <strong>Stok ve top kayıtları uyuşmuyor.</strong>
+                    <p>Ürün stoğu: {balance.productStock} m · Topların toplamı: {balance.trackedRollLength} m</p>
+                    <p>Satış, stok kayıtları kontrol edilene kadar engellendi. Stok bölümünde “Topları Yönet” ile farkı inceleyin.</p>
+                  </div>
+                ) : null;
+              })() : null}
               <button
                 type="button"
                 onClick={() => addToCart(selectedProduct, quantity)}
-                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-lg transition-all shadow-sm cursor-pointer flex items-center justify-center gap-2"
+                disabled={isReserving || Boolean(selectedProduct && shouldShowRolls(selectedProduct) && selectedProduct.rolls?.length && !getRollStockBalance(selectedProduct).isBalanced)}
+                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold text-sm rounded-lg transition-all shadow-sm cursor-pointer flex items-center justify-center gap-2"
               >
                 <ShoppingCart className="w-4 h-4" />
-                <span>Sepete Ekle — {formatCurrency(selectedProduct.price * (cutLength ? parseFloat(cutLength) : quantity))}</span>
+                <span>{isReserving ? "Stok ayrılıyor..." : ("Sepete Ekle — " + formatCurrency(selectedProduct.price * (shouldShowRolls(selectedProduct) ? Number(cutLength || 1) : quantity)))}</span>
               </button>
             </div>
           )}
@@ -765,14 +803,21 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
               </div>
             ) : (
               displayedProducts.map((p) => {
-                const isFabric = p.category?.toLowerCase() === "kumaş" || p.category?.toLowerCase() === "kumas" || (p.rolls && p.rolls.length > 0);
+                const isFabric = shouldShowRolls(p);
                 const hasBoxes = p.boxes && p.boxes.length > 0;
-                const isConfigurable = isFabric || hasBoxes;
+                const hasVariants = Boolean(p.groupMembers && p.groupMembers.length > 1);
+                const isConfigurable = isFabric || hasBoxes || hasVariants;
 
                 return (
                   <div
                     key={p.id}
-                    onClick={() => selectProductToConfigure(p)}
+                    onClick={() => {
+                      if (p.groupMembers && p.groupMembers.length > 1) {
+                        setExpandedFamilyId((current) => current === p.id ? null : p.id);
+                      } else {
+                        selectProductToConfigure(p);
+                      }
+                    }}
                     className="bg-white p-3 rounded-xl border border-slate-200 hover:border-indigo-400 hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group active:scale-98 select-none"
                   >
                     <div>
@@ -808,6 +853,34 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                           {p.sku}
                         </span>
                       )}
+                      {p.groupMembers && p.groupMembers.length > 1 && (
+                        <div className="mt-2 space-y-1" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedFamilyId((current) => current === p.id ? null : p.id)}
+                            className="w-full text-left text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 rounded-lg px-2 py-1.5"
+                          >
+                            {expandedFamilyId === p.id ? "Varyantları gizle" : "Varyant seç (" + p.groupMembers.length + ")"}
+                          </button>
+                          {expandedFamilyId === p.id && p.groupMembers.map((variant) => (
+                            <button
+                              key={variant.id}
+                              type="button"
+                              onClick={() => selectProductToConfigure(variant)}
+                              className="w-full flex items-center justify-between gap-2 text-left bg-white border border-slate-200 hover:border-indigo-400 rounded-lg px-2 py-2"
+                            >
+                              <span className="min-w-0">
+                                <span className="block text-[10px] font-bold text-slate-700 truncate">{variant.variantLabel || variant.name}</span>
+                                <span className="block text-[9px] text-slate-400 font-mono truncate">{variant.sku || variant.barcode || "Stok kodu yok"}</span>
+                              </span>
+                              <span className="shrink-0 text-right">
+                                <span className="block text-[10px] font-black text-slate-800">{formatCurrency(variant.price)}</span>
+                                <span className="block text-[9px] text-emerald-600">{getAvailableStock(variant)} {variant.unit || "Adet"}</span>
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between gap-1">
@@ -816,7 +889,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
                           {formatCurrency(p.price)}
                         </span>
                         <span className={`text-[10px] font-bold block ${p.stock <= p.minStock ? "text-rose-500" : "text-emerald-600"}`}>
-                          {p.stock} {p.unit || (isFabric ? "m" : "ad")}
+                          {getAvailableStock(p)} {isFabric ? "m" : (p.unit || "ad")}
                         </span>
                       </div>
 
@@ -864,7 +937,7 @@ export function QuickSale({ products, onRecordSale }: QuickSaleProps) {
               {cart.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setCart([])}
+                  onClick={() => void clearCart()}
                   className="text-xs font-bold text-rose-500 hover:text-rose-600 transition-colors uppercase tracking-wider"
                 >
                   Temizle

@@ -6,7 +6,6 @@ import {
   ShoppingCart,
   QrCode,
   History as HistoryIcon,
-  Menu,
   X,
   User,
   Plus,
@@ -52,6 +51,9 @@ import {
   getCustomers,
   updateCustomer,
   processSaleTransaction,
+  reserveStockForSale,
+  releaseStockReservation,
+  cleanupExpiredStockReservations,
   getTenantEntitlement,
   getOrCreateTenantContext,
   subscribeProducts,
@@ -61,7 +63,6 @@ import { Auth } from "./components/Auth";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showMobileMoreDrawer, setShowMobileMoreDrawer] = useState(false);
 
   // Auth State
@@ -155,6 +156,8 @@ export default function App() {
     try {
       assertAuthenticated(uid, "App.fetchDataForUser");
       if (showLoader) setIsLoading(true);
+      // Release abandoned POS holds when a tenant opens the app again.
+      await cleanupExpiredStockReservations(uid).catch((err) => console.warn("Stock reservation cleanup notice:", err));
       const [productsRes, salesRes, entitlementRes, contextRes] = await Promise.all([
         getProducts(uid, true),
         getSales(uid),
@@ -238,6 +241,21 @@ export default function App() {
     };
   }, [user?.uid]);
 
+  // Re-check abandoned cart holds while the app remains open.
+  // Product listeners propagate released quantities to other signed-in sellers.
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid || uid === "demo-user" || uid.startsWith("local-")) return;
+
+    const intervalId = window.setInterval(() => {
+      cleanupExpiredStockReservations(uid).catch((err) => {
+        console.warn("Periodic stock reservation cleanup notice:", err);
+      });
+    }, 60_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [user?.uid]);
+
   // Product mutations with Optimistic UI updates
   const handleAddProduct = async (newProduct: Omit<Product, "id">) => {
     const uid = user?.uid || auth.currentUser?.uid;
@@ -298,7 +316,7 @@ export default function App() {
 
   // Sales mutation (ACID Atomic Transaction)
   const handleRecordSale = async (
-    items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number; selectedBoxId?: string }[],
+    items: { productId: string; quantity: number; selectedRollId?: string; cutLength?: number; selectedBoxId?: string; reservationId?: string; productIds?: string[] }[],
     customerId?: string,
     amountPaid?: number,
     idempotencyKey?: string,
@@ -318,6 +336,29 @@ export default function App() {
 
     await fetchData(false);
     return saleResult;
+  };
+
+  const handleReserveStock = async (
+    productId: string,
+    quantity: number,
+    reservationId: string,
+    selectedBoxId?: string,
+    groupProductIds?: string[]
+  ) => {
+    const uid = user?.uid || auth.currentUser?.uid;
+    if (!uid) throw new Error("Oturum açık değil.");
+    const updatedProduct = await reserveStockForSale(uid, productId, quantity, reservationId, selectedBoxId, groupProductIds);
+    setProducts((prev) => prev.map((p) => p.id === productId ? { ...p, ...updatedProduct } : p));
+    return updatedProduct;
+  };
+
+  const handleReleaseStockReservation = async (reservationId: string) => {
+    const uid = user?.uid || auth.currentUser?.uid;
+    if (!uid) return;
+    const updatedProduct = await releaseStockReservation(uid, reservationId);
+    if (updatedProduct) {
+      setProducts((prev) => prev.map((p) => p.id === updatedProduct.id ? { ...p, ...updatedProduct } : p));
+    }
   };
 
   const handleSignOut = async () => {
@@ -552,51 +593,8 @@ export default function App() {
             >
               <LogOut className="w-5 h-5" />
             </button>
-            <button
-              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className="p-2 text-slate-400 hover:text-white"
-            >
-              {isMobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-            </button>
           </div>
         </header>
-
-        {/* Mobile Navigation Drawer */}
-        <AnimatePresence>
-          {isMobileMenuOpen && (
-            <motion.div
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="absolute top-16 left-0 right-0 bg-slate-900 border-b border-slate-800 p-4 space-y-1 z-10 md:hidden"
-            >
-              {navItems.map((item) => {
-                const Icon = item.icon;
-                const isActive = activeTab === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => {
-                      if (item.id === "inventory") {
-                        setInventoryFilter(null);
-                      }
-                      setActiveTab(item.id);
-                      setIsMobileMenuOpen(false);
-                      setScanSuccessMsg("");
-                      setScanErrorMsg("");
-                    }}
-                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all ${
-                      isActive ? "bg-indigo-600 text-white" : "text-slate-400 hover:bg-slate-800/30"
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" />
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         {/* Trial Expired / Subscription Inactive Global Warning */}
         {entitlement && !entitlement.hasAccess && (
@@ -660,7 +658,7 @@ export default function App() {
         )}
 
         {/* Inner Content Scroller */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 pb-20 md:pb-8">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 pb-[calc(env(safe-area-inset-bottom)+5rem)] md:pb-8">
           {isLoading ? (
             <div className="flex flex-col items-center justify-center h-full space-y-3">
               <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
@@ -707,7 +705,7 @@ export default function App() {
                   <OrdersWaybills products={activeProducts} onRefreshProducts={fetchData} />
                 )}
                 {activeTab === "sale" && (
-                  <QuickSale products={activeProducts} onRecordSale={handleRecordSale} />
+                  <QuickSale products={activeProducts} onRecordSale={handleRecordSale} onReserveStock={handleReserveStock} onReleaseStockReservation={handleReleaseStockReservation} />
                 )}
                 {activeTab === "crm" && (
                   <Crm onRefreshData={fetchData} />
@@ -778,7 +776,7 @@ export default function App() {
                     sales={sales} 
                     products={products} 
                     onRefreshData={fetchData} 
-                    currentUserRole={tenantContext?.role || "owner"} 
+                    currentUserRole={tenantContext?.role} 
                   />
                 )}
                 {activeTab === "settings" && (
@@ -795,7 +793,7 @@ export default function App() {
         </main>
 
         {/* 3. Mobile Fixed Bottom Navigation Bar (5 Primary Buttons: Özet, Stok, Satış, Belgeler, Diğer) */}
-        <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200 z-30 flex items-center justify-around py-1.5 px-2 shadow-lg">
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200 z-30 flex items-center justify-around pt-1.5 pb-[calc(env(safe-area-inset-bottom)+0.375rem)] px-2 shadow-lg">
           <button
             type="button"
             onClick={() => { setActiveTab("dashboard"); setShowMobileMoreDrawer(false); }}

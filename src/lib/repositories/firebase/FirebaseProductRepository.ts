@@ -13,7 +13,8 @@ import {
   query, 
   where,
   limit,
-  onSnapshot
+  onSnapshot,
+  runTransaction
 } from "firebase/firestore";
 import { memoryCache } from "../../cache";
 import { getLocal, setLocal, SEED_PRODUCTS, logAuditEvent, roundQty, round2, sanitizeFirestorePayload } from "./helpers";
@@ -371,6 +372,9 @@ export class FirebaseProductRepository implements ProductRepository {
       metadata: synced.metadata,
       attributes: synced.attributes,
       unit: product.unit || "Adet",
+      // Every newly created product starts in its own universal family.
+      // A later variant can explicitly join this family via productFamilyId.
+      productFamilyId: product.productFamilyId || ("family_" + Math.random().toString(36).slice(2, 12)),
       tenantId: context.tenantId,
       isActive: true
     };
@@ -576,6 +580,10 @@ export class FirebaseProductRepository implements ProductRepository {
     memoryCache.invalidate("products_");
 
     let normalizedUpdates = { ...updates };
+    // Cart reservation counters are repository-managed and must never be overwritten by ordinary product edits.
+    delete (normalizedUpdates as any).reservedStock;
+    delete (normalizedUpdates as any).groupProductIds;
+    delete (normalizedUpdates as any).groupMembers;
     if (updates.metadata || updates.attributes) {
       const synced = syncSectorMetadata({
         metadata: updates.metadata,
@@ -597,6 +605,41 @@ export class FirebaseProductRepository implements ProductRepository {
     if (isDemoUser(validUid)) {
       const list = getLocal<Product[]>("stokpro_demo_products", SEED_PRODUCTS);
       const prev = list.find(p => p.id === productId);
+      if (!prev) throw new Error("Ürün bulunamadı.");
+      const reservedStock = Number(prev.reservedStock || 0);
+      if (normalizedUpdates.stock !== undefined && Number(normalizedUpdates.stock) < reservedStock) {
+        throw new Error("Stok, aktif satış sepetlerinde ayrılmış miktarın altına düşürülemez (" + reservedStock + ").");
+      }
+      if (normalizedUpdates.rolls) {
+        const oldRolls = prev.rolls || [];
+        for (const oldRoll of oldRolls) {
+          const held = Number(oldRoll.reservedLength || 0);
+          if (held <= 0) continue;
+          const nextRoll = normalizedUpdates.rolls.find(r => r.id === oldRoll.id);
+          if (!nextRoll || Number(nextRoll.length || 0) < held) {
+            throw new Error("Aktif satış sepetlerinde ayrılmış " + held + " metrelik top silinemez veya bu miktarın altına indirilemez.");
+          }
+        }
+        normalizedUpdates.rolls = normalizedUpdates.rolls.map(nextRoll => {
+          const oldRoll = oldRolls.find(r => r.id === nextRoll.id);
+          return { ...nextRoll, reservedLength: Number(oldRoll?.reservedLength || 0) };
+        });
+      }
+      if (normalizedUpdates.boxes) {
+        const oldBoxes = prev.boxes || [];
+        for (const oldBox of oldBoxes) {
+          const held = Number(oldBox.reservedQuantity || 0);
+          if (held <= 0) continue;
+          const nextBox = normalizedUpdates.boxes.find(b => b.id === oldBox.id);
+          if (!nextBox || Number(nextBox.quantity || 0) < held) {
+            throw new Error("Aktif satış sepetlerinde ayrılmış koli miktarı silinemez veya bu miktarın altına indirilemez.");
+          }
+        }
+        normalizedUpdates.boxes = normalizedUpdates.boxes.map(nextBox => {
+          const oldBox = oldBoxes.find(b => b.id === nextBox.id);
+          return { ...nextBox, reservedQuantity: Number(oldBox?.reservedQuantity || 0) };
+        });
+      }
       const updated = list.map(p => p.id === productId ? { ...p, ...normalizedUpdates } : p);
       setLocal("stokpro_demo_products", updated);
 
@@ -616,8 +659,51 @@ export class FirebaseProductRepository implements ProductRepository {
 
     try {
       const docRef = doc(this.db, "products", productId);
-      const cleanUpdates = sanitizeFirestorePayload(normalizedUpdates);
-      await updateDoc(docRef, cleanUpdates);
+      await runTransaction(this.db, async (transaction) => {
+        const snapshot = await transaction.get(docRef);
+        if (!snapshot.exists()) throw new Error("Ürün bulunamadı.");
+        const current = { id: snapshot.id, ...snapshot.data() } as Product;
+        if (current.tenantId && current.tenantId !== context.tenantId) {
+          throw new Error("Yetkisiz işlem: Başka bir firmanın ürünü güncellenemez.");
+        }
+        const reservedStock = Number(current.reservedStock || 0);
+        if (normalizedUpdates.stock !== undefined && Number(normalizedUpdates.stock) < reservedStock) {
+          throw new Error("Stok, aktif satış sepetlerinde ayrılmış miktarın altına düşürülemez (" + reservedStock + ").");
+        }
+        const safeUpdates: Partial<Product> = { ...normalizedUpdates };
+        if (normalizedUpdates.rolls) {
+          const oldRolls = current.rolls || [];
+          for (const oldRoll of oldRolls) {
+            const held = Number(oldRoll.reservedLength || 0);
+            if (held <= 0) continue;
+            const nextRoll = normalizedUpdates.rolls.find(r => r.id === oldRoll.id);
+            if (!nextRoll || Number(nextRoll.length || 0) < held) {
+              throw new Error("Aktif satış sepetlerinde ayrılmış " + held + " metrelik top silinemez veya bu miktarın altına indirilemez.");
+            }
+          }
+          safeUpdates.rolls = normalizedUpdates.rolls.map(nextRoll => {
+            const oldRoll = oldRolls.find(r => r.id === nextRoll.id);
+            return { ...nextRoll, reservedLength: Number(oldRoll?.reservedLength || nextRoll.reservedLength || 0) };
+          });
+        }
+        if (normalizedUpdates.boxes) {
+          const oldBoxes = current.boxes || [];
+          for (const oldBox of oldBoxes) {
+            const held = Number(oldBox.reservedQuantity || 0);
+            if (held <= 0) continue;
+            const nextBox = normalizedUpdates.boxes.find(b => b.id === oldBox.id);
+            if (!nextBox || Number(nextBox.quantity || 0) < held) {
+              throw new Error("Aktif satış sepetlerinde ayrılmış koli miktarı silinemez veya bu miktarın altına indirilemez.");
+            }
+          }
+          safeUpdates.boxes = normalizedUpdates.boxes.map(nextBox => {
+            const oldBox = oldBoxes.find(b => b.id === nextBox.id);
+            return { ...nextBox, reservedQuantity: Number(oldBox?.reservedQuantity || nextBox.reservedQuantity || 0) };
+          });
+        }
+        const cleanUpdates = sanitizeFirestorePayload(safeUpdates as Record<string, any>);
+        transaction.update(docRef, cleanUpdates);
+      });
 
       await logAuditEvent(validUid, {
         action: "PRODUCT_UPDATED",
