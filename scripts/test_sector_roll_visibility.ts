@@ -147,6 +147,39 @@ assertEqual(groupedFabric[0].groupProductIds?.length === 3, true, "Gruplanan ü�
 assertEqual(getGroupedAvailableStock(groupedFabric[0]) === 51, true, "Sepette ayrılmış 10 metre diğer satıcılar için toplamı 51 metreye indirir");
 assertEqual(groupedFabric[0].rolls?.length === 3, true, "Üç fiziksel top grup ayrıntılarında korunur");
 
+// User-provided real-world textile sample: three physical tops of one sellable fabric.
+const lizbonTops: Product[] = [
+  makeProduct({ id: "lizbon-top-11", name: "Lizbon(300CM)", sku: "232-8005", category: "Kumaş", unit: "Metre", price: 100, stock: 33.8, metadata: { color: "Bordo", rollNumber: "11" } }),
+  makeProduct({ id: "lizbon-top-12", name: "Lizbon(300CM)", sku: "232-8005", category: "Kumaş", unit: "Metre", price: 105, stock: 33.1, metadata: { color: "Bordo", rollNumber: "12" } }),
+  makeProduct({ id: "lizbon-top-13", name: "Lizbon(300CM)", sku: "232-8005", category: "Kumaş", unit: "Metre", price: 98, stock: 18.7, metadata: { color: "Bordo", rollNumber: "13" } })
+];
+const groupedLizbon = groupProducts(lizbonTops);
+assertEqual(groupedLizbon.length === 1, true, "Lizbon Bordo kumaşının üç topu tek ana ürün altında gruplanır");
+assertEqual(groupedLizbon[0].stock === 85.6, true, "Lizbon ana ürün toplamı 33,8 + 33,1 + 18,7 = 85,6 metre");
+assertEqual(groupedLizbon[0].rolls?.length === 3, true, "Lizbon ana ürününün altında üç fiziksel top korunur");
+assertEqual(groupedLizbon[0].rolls?.map((roll) => roll.rollNumber).join(",") === "11,12,13", true, "Lizbon top numaraları alt detaylarda korunur");
+
+// User-provided universal variants: shoe sizes and screwdriver tip styles.
+const koseleVariants: Product[] = [
+  makeProduct({ id: "kosele-40", productFamilyId: "family-kosele-siyah", name: "Kösele", variantLabel: "Siyah / 40", sku: "KOSELE-SIYAH-40", category: "Ayakkabı", stock: 5 }),
+  makeProduct({ id: "kosele-41", productFamilyId: "family-kosele-siyah", name: "Kösele", variantLabel: "Siyah / 41", sku: "KOSELE-SIYAH-41", category: "Ayakkabı", stock: 7 }),
+  makeProduct({ id: "kosele-42", productFamilyId: "family-kosele-siyah", name: "Kösele", variantLabel: "Siyah / 42", sku: "KOSELE-SIYAH-42", category: "Ayakkabı", stock: 3 })
+];
+const groupedKosele = groupProducts(koseleVariants);
+assertEqual(groupedKosele.length === 1, true, "Kösele Siyah 40/41/42 tek ana ürün altında gruplanır");
+assertEqual(groupedKosele[0].stock === 15, true, "Kösele ana ürün stoğu üç numaranın toplamıdır");
+assertEqual(groupedKosele[0].groupMembers?.length === 3, true, "Kösele numaraları ayrı alt varyant kayıtları olarak korunur");
+
+const screwdriverVariants: Product[] = [
+  makeProduct({ id: "screwdriver-star", productFamilyId: "family-tornavida-siyah", name: "Tornavida", variantLabel: "Siyah / Yıldız", sku: "TOR-SIYAH-YILDIZ", category: "Hırdavat", stock: 8 }),
+  makeProduct({ id: "screwdriver-flat", productFamilyId: "family-tornavida-siyah", name: "Tornavida", variantLabel: "Siyah / Düz", sku: "TOR-SIYAH-DUZ", category: "Hırdavat", stock: 9 }),
+  makeProduct({ id: "screwdriver-phillips", productFamilyId: "family-tornavida-siyah", name: "Tornavida", variantLabel: "Siyah / Philips", sku: "TOR-SIYAH-PHILIPS", category: "Hırdavat", stock: 4 })
+];
+const groupedScrewdrivers = groupProducts(screwdriverVariants);
+assertEqual(groupedScrewdrivers.length === 1, true, "Siyah tornavidanın yıldız/düz/Philips uçları tek ana ürün altında gruplanır");
+assertEqual(groupedScrewdrivers[0].stock === 21, true, "Tornavida ana ürün stoğu üç uç tipinin toplamıdır");
+assertEqual(groupedScrewdrivers[0].groupMembers?.length === 3, true, "Tornavida uç tipleri ayrı alt varyant kayıtları olarak korunur");
+
 const differentColor = makeProduct({
   id: "fabric-top-red",
   name: "Premium Pamuk Kumaş - Top #4",
