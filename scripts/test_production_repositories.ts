@@ -761,6 +761,68 @@ export async function runProductionRepositoryTests() {
       "Grup satış iptalinde ayakkabı varyantlarının toplam stoğu 10 adede geri döner"
     );
 
+    // -------------------------------------------------------------
+    // SENARYO 3G: SEÇİLEN GENEL VARYANTIN TEK BAŞINA SATILMASI VE İADESİ
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3G: Seçilen tornavida varyantından tekil stok çıkışı ---");
+    const screwdriverFamilyId = "family_screwdriver_black_repo_test";
+    const screwdriverVariants: Product[] = [];
+    for (const variant of [
+      { label: "Siyah / Yıldız", stock: 8, sku: "TOR-SIYAH-YILDIZ" },
+      { label: "Siyah / Düz", stock: 9, sku: "TOR-SIYAH-DUZ" },
+      { label: "Siyah / Philips", stock: 4, sku: "TOR-SIYAH-PHILIPS" }
+    ]) {
+      const created = await productRepoA.create("usr_repo_owner_a", {
+        name: "Tornavida", productFamilyId: screwdriverFamilyId, variantLabel: variant.label,
+        sku: variant.sku, category: "Hırdavat", unit: "Adet", price: 150,
+        stock: variant.stock, minStock: 0, attributes: { Renk: "Siyah", Uç: variant.label.split(" / ")[1] }
+      });
+      screwdriverVariants.push(created);
+    }
+    const groupedScrewdriversForSale = groupProducts(screwdriverVariants);
+    recordResult(
+      Boolean(groupedScrewdriversForSale.length === 1 && groupedScrewdriversForSale[0].stock === 21 && groupedScrewdriversForSale[0].groupMembers?.length === 3),
+      "Siyah tornavidanın üç uç tipi tek ana ürün ve toplam 21 adet stok olarak görünür"
+    );
+    const selectedScrewdriver = screwdriverVariants[1];
+    const screwdriverSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{ productId: selectedScrewdriver.id, quantity: 2 }],
+      amountPaid: 0,
+      idempotencyKey: "screwdriver_flat_variant_sale_001"
+    });
+    const screwdriverAfterSale = await Promise.all(
+      screwdriverVariants.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    recordResult(
+      Boolean(
+        screwdriverSale.stockDeducted === true &&
+        screwdriverAfterSale[0]?.stock === 8 &&
+        screwdriverAfterSale[1]?.stock === 7 &&
+        screwdriverAfterSale[2]?.stock === 4 &&
+        groupProducts(screwdriverAfterSale.filter((product): product is Product => Boolean(product)))[0]?.stock === 19
+      ),
+      "Düz uçtan 2 adet satılınca yalnızca Düz varyantı 9'dan 7'ye iner; diğer uçlar değişmez"
+    );
+    const screwdriverSaleCancel = await salesRepoA.cancelSale(
+      screwdriverSale.id,
+      "usr_repo_owner_a",
+      "Tornavida varyant satış iptali",
+      "screwdriver_flat_variant_cancel_001"
+    );
+    const screwdriverAfterCancel = await Promise.all(
+      screwdriverVariants.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    recordResult(
+      Boolean(
+        screwdriverSaleCancel.stockRestored === true &&
+        screwdriverAfterCancel[0]?.stock === 8 &&
+        screwdriverAfterCancel[1]?.stock === 9 &&
+        screwdriverAfterCancel[2]?.stock === 4 &&
+        groupProducts(screwdriverAfterCancel.filter((product): product is Product => Boolean(product)))[0]?.stock === 21
+      ),
+      "Düz uç satış iptalinde yalnızca seçilen varyantın 2 adedi geri gelir; aile toplamı 21 olur"
+    );
+
     // SENARYO 4: SİPARİŞ OLUŞTURMA VE ATOMİK İPTAL İLE METRAJ İADESİ
     // -------------------------------------------------------------
     console.log("\n--- BÖLÜM 4: FirebaseOrderRepository (createAtomic & cancelOrderAtomic) ---");
