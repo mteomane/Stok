@@ -149,3 +149,65 @@ export function getGroupedAvailableStock(product: Product): number {
 export function getGroupedAvailableRolls(product: Product): number {
   return Number((product.rolls || []).reduce((sum, roll) => sum + getAvailableRollLength(roll), 0).toFixed(3));
 }
+
+
+// Inventory-only hierarchy: product family -> color variants -> physical tops.
+// Sales continues using groupFabricProducts() so each color remains independently sellable.
+export function groupFabricProductsByParent(products: Product[]): Product[] {
+  const colorProducts = groupProducts(products);
+  const parentGroups = new Map<string, Product[]>();
+  const untouched: Product[] = [];
+
+  for (const product of colorProducts) {
+    if (!isFabricRecord(product)) {
+      untouched.push(product);
+      continue;
+    }
+
+    const metadata = (product.metadata || {}) as Record<string, unknown>;
+    const attributes = product.attributes || {};
+    const colorCode = String(metadata.colorCode ?? attributes.colorCode ?? attributes.RenkKodu ?? attributes["Renk Kodu"] ?? "").trim();
+    const colorName = String(metadata.colorName ?? metadata.color ?? attributes.colorName ?? attributes.Renk ?? attributes["Renk Adı"] ?? "").trim();
+    const label = [colorCode, colorName].filter(Boolean).join(" · ") || product.variantLabel || "Renk belirtilmemiş";
+    const key = JSON.stringify([
+      baseFabricName(product.name),
+      normalize(product.category),
+      normalize(product.brand || product.metadata?.brand || ""),
+      normalize(product.unit || "metre"),
+      attr(product, ["fabricType", "Kumaş Tipi"]),
+      attr(product, ["width", "En", "Kumaş Eni"]),
+      attr(product, ["pattern", "Desen", "Desen / Baskı"]),
+      product.isActive === false ? "archived" : "active"
+    ]);
+    const list = parentGroups.get(key) || [];
+    list.push({ ...product, variantLabel: label });
+    parentGroups.set(key, list);
+  }
+
+  const parents: Product[] = [];
+  for (const variantsUnsorted of parentGroups.values()) {
+    const colorGroups = [...variantsUnsorted].sort((a, b) =>
+      String(a.variantLabel || "").localeCompare(String(b.variantLabel || ""), "tr")
+    );
+    const representative = colorGroups[0];
+    const sourceProducts = colorGroups.flatMap((variant) =>
+      variant.groupMembers?.length ? variant.groupMembers : [variant]
+    );
+    const rolls = colorGroups.flatMap((variant) => variant.rolls || []);
+    const stock = Number(sourceProducts.reduce((sum, member) => sum + Number(member.stock || 0), 0).toFixed(3));
+    const reservedStock = Number(sourceProducts.reduce((sum, member) => sum + Number(member.reservedStock || 0), 0).toFixed(3));
+
+    parents.push({
+      ...representative,
+      name: displayFabricName(representative.name),
+      stock,
+      reservedStock,
+      rolls,
+      groupProductIds: sourceProducts.map((member) => member.id),
+      groupMembers: sourceProducts,
+      colorGroups
+    });
+  }
+
+  return [...untouched, ...parents].sort((a, b) => a.name.localeCompare(b.name, "tr"));
+}
