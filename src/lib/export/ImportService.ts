@@ -15,7 +15,7 @@ import { triggerFileDownload } from "./fileDownload";
 // A textile variety is identified by product name AND its color code/name.
 // The same fabric in C1 and C2 must remain two separate child variants.
 function textileColorKey(value: any): string {
-  return String(value ?? "").normalize("NFKC").toLocaleLowerCase("tr-TR").replace(/\\s+/g, " ").trim();
+  return String(value ?? "").normalize("NFKC").toLocaleLowerCase("tr-TR").replace(/\s+/g, " ").trim();
 }
 
 function textileVariantKey(product: any): string {
