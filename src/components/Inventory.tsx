@@ -43,7 +43,7 @@ import { QuickProductModal } from "./QuickProductModal";
 import { QuickReplenishModal } from "./QuickReplenishModal";
 import { QRScanner } from "./QRScanner";
 import { getAvailableStock, getSectorProfile, shouldShowRolls, SECTOR_PROFILES } from "../lib/sectorConfig";
-import { groupFabricProducts, groupFabricProductsByParent, getGroupedAvailableStock } from "../lib/productGrouping";
+import { groupFabricProductsByParent, getGroupedAvailableStock } from "../lib/productGrouping";
 import { exportService } from "../lib/export/ExportService";
 import { triggerFileDownload } from "../lib/export/fileDownload";
 
