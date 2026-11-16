@@ -105,29 +105,96 @@ export function getSectorProfile(sectorKey?: string): SectorProfile {
 }
 
 /**
- * Checks whether rolls (fabric rolls) should be visible and manageable for a product.
- * Respects existing textile products even if sector is set to general!
+ * Checks whether roll tracking should be available for a concrete product.
+ * The active sector is only a default when no product has been selected yet.
+ * Once a product exists, its own category, unit and fabric metadata decide.
  */
 export function shouldShowRolls(product: Product | null | undefined, activeSector?: string): boolean {
   if (!product) {
-    const profile = getSectorProfile(activeSector);
-    return profile.supportsRolls;
+    return getSectorProfile(activeSector).supportsRolls;
   }
 
-  // 1. If product already has rolls defined, always preserve and show them!
+  // Existing roll records must always remain visible, regardless of sector changes.
   if (product.rolls && product.rolls.length > 0) {
     return true;
   }
 
-  // 2. If product category is "Kumaş", show rolls
-  const cat = (product.category || "").toLowerCase();
-  if (cat.includes("kumaş") || cat.includes("kumas")) {
+  const category = (product.category || "").trim().toLocaleLowerCase("tr-TR");
+  const fabricCategories = ["kumaş", "kumas", "dokuma", "örme", "orme", "tekstil"];
+  if (fabricCategories.some((term) => category.includes(term))) {
     return true;
   }
 
-  // 3. Otherwise rely on active sector capability
-  const profile = getSectorProfile(activeSector);
-  return profile.supportsRolls;
+  const unit = (product.unit || "").trim().toLocaleLowerCase("tr-TR");
+  const rollUnits = new Set(["metre", "meter", "mt", "m", "top", "rulo"]);
+  if (rollUnits.has(unit)) {
+    return true;
+  }
+
+  const metadata = (product.metadata || {}) as Record<string, unknown>;
+  const attributes = product.attributes || {};
+  const hasFabricMetadata = [
+    metadata.fabricType,
+    metadata.rollNumber,
+    metadata.length,
+    metadata.width,
+    attributes.fabricType,
+    attributes.rollNumber,
+    attributes.length,
+    attributes.width,
+    attributes["Kumaş Tipi"],
+    attributes["Kumaş Eni"],
+    attributes["Rulo No"]
+  ].some((value) => value !== undefined && value !== null && String(value).trim() !== "");
+
+  return hasFabricMetadata;
+}
+
+/**
+ * Availability shown to sellers is physical stock minus active cart reservations.
+ * The physical stock value remains intact until checkout is committed.
+ */
+export function getAvailableStock(product: Pick<Product, "stock" | "reservedStock">): number {
+  return Number(Math.max(0, Number(product.stock || 0) - Number(product.reservedStock || 0)).toFixed(3));
+}
+
+export function getAvailableRollLength(roll: Pick<NonNullable<Product["rolls"]>[number], "length" | "reservedLength">): number {
+  return Number(Math.max(0, Number(roll.length || 0) - Number(roll.reservedLength || 0)).toFixed(3));
+}
+
+export function getAvailableBoxQuantity(box: Pick<NonNullable<Product["boxes"]>[number], "quantity" | "reservedQuantity">): number {
+  return Number(Math.max(0, Number(box.quantity || 0) - Number(box.reservedQuantity || 0)).toFixed(3));
+}
+
+export interface RollStockBalance {
+  hasRollRecords: boolean;
+  trackedRollLength: number;
+  productStock: number;
+  difference: number;
+  isBalanced: boolean;
+}
+
+/**
+ * Compares aggregate stock with remaining length on every recorded roll,
+ * including reserved rolls. It reports discrepancies without changing stock.
+ */
+export function getRollStockBalance(
+  product: Pick<Product, "stock" | "rolls">
+): RollStockBalance {
+  const rolls = product.rolls || [];
+  const trackedRollLength = Number(
+    rolls.reduce((sum, roll) => sum + Math.max(0, Number(roll.length) || 0), 0).toFixed(3)
+  );
+  const productStock = Number(Math.max(0, Number(product.stock) || 0).toFixed(3));
+  const difference = Number((trackedRollLength - productStock).toFixed(3));
+
+  return {
+    hasRollRecords: rolls.length > 0,
+    trackedRollLength,
+    productStock,
+    difference,
+    isBalanced: rolls.length === 0 || Math.abs(difference) < 0.001
+  };
 }
 
 /**

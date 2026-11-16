@@ -33,6 +33,8 @@ import { FirebaseSupplierRepository } from "../src/lib/repositories/firebase/Fir
 import { setTestAuthenticatedUid } from "../src/lib/authGuard";
 import { memoryCache } from "../src/lib/cache";
 import { roundQty, round2 } from "../src/lib/repositories/firebase/helpers";
+import { getAvailableStock } from "../src/lib/sectorConfig";
+import { groupFabricProducts, groupProducts, getGroupedAvailableStock } from "../src/lib/productGrouping";
 
 const EMULATOR_HOST = "127.0.0.1";
 const EMULATOR_PORT = 8088;
@@ -184,6 +186,12 @@ export async function runProductionRepositoryTests() {
       companyId: "tenant_repo_a"
     });
     const dbA = authContextA.firestore() as unknown as Firestore;
+
+    const authContextStaffA = testEnv.authenticatedContext("usr_repo_staff_a", {
+      email: "staff_a@tekstil.com",
+      companyId: "tenant_repo_a"
+    });
+    const dbStaffA = authContextStaffA.firestore() as unknown as Firestore;
 
     const authContextB = testEnv.authenticatedContext("usr_repo_owner_b", {
       email: "owner_b@dokuma.com",
@@ -344,6 +352,477 @@ export async function runProductionRepositoryTests() {
     );
 
     // -------------------------------------------------------------
+    // SENARYO 3B: FIFO KUMAŞ TOPU SATIŞI VE TAM İPTAL İADESİ
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3B: FIFO kumaş topu dağılım kaydı ve iptal iadesi ---");
+    const fifoFabricProduct = await productRepoA.create("usr_repo_owner_a", {
+      name: "FIFO Test Pamuk Kumaş",
+      sku: "FIFO-FAB-001",
+      category: "Kumaş",
+      unit: "Metre",
+      price: 100,
+      stock: 5,
+      minStock: 0,
+      rolls: [
+        { id: "fifo_roll_1", rollNumber: "FIFO Top 1", length: 2, initialLength: 2, status: "available" },
+        { id: "fifo_roll_2", rollNumber: "FIFO Top 2", length: 3, initialLength: 3, status: "available" }
+      ]
+    });
+    const fifoFabricSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{ productId: fifoFabricProduct.id, quantity: 3 }],
+      amountPaid: 0,
+      idempotencyKey: "fifo_fabric_sale_001"
+    });
+    const fifoFabricAfterSale = await productRepoA.getById(fifoFabricProduct.id, "usr_repo_owner_a");
+    const fifoFabricAllocations = fifoFabricSale.items[0]?.rollAllocations || [];
+    recordResult(
+      Boolean(
+        fifoFabricAfterSale?.stock === 2 &&
+        fifoFabricAfterSale?.rolls?.[0]?.length === 0 &&
+        fifoFabricAfterSale?.rolls?.[1]?.length === 2 &&
+        fifoFabricAllocations.length === 2 &&
+        fifoFabricAllocations[0]?.rollId === "fifo_roll_1" &&
+        fifoFabricAllocations[0]?.length === 2 &&
+        fifoFabricAllocations[1]?.rollId === "fifo_roll_2" &&
+        fifoFabricAllocations[1]?.length === 1
+      ),
+      "FIFO satışında hangi kumaş topundan kaç metre çıktığı fişe kaydedilir"
+    );
+    const fifoFabricCancel = await salesRepoA.cancelSale(
+      fifoFabricSale.id,
+      "usr_repo_owner_a",
+      "FIFO iade testi",
+      "fifo_fabric_cancel_001"
+    );
+    const fifoFabricAfterCancel = await productRepoA.getById(fifoFabricProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(
+        fifoFabricCancel.stockRestored === true &&
+        fifoFabricAfterCancel?.stock === 5 &&
+        fifoFabricAfterCancel?.rolls?.[0]?.length === 2 &&
+        fifoFabricAfterCancel?.rolls?.[1]?.length === 3
+      ),
+      "FIFO kumaş satış iptali metreleri doğru toplara eksiksiz iade eder"
+    );
+
+    // -------------------------------------------------------------
+    // SENARYO 3C: FIFO KOLİ SATIŞI VE TAM İPTAL İADESİ
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3C: FIFO koli dağılım kaydı ve iptal iadesi ---");
+    const fifoBoxProduct = await productRepoA.create("usr_repo_owner_a", {
+      name: "FIFO Test Kupon Paketi",
+      sku: "FIFO-BOX-001",
+      category: "Genel",
+      unit: "Adet",
+      price: 25,
+      stock: 5,
+      minStock: 0,
+      boxes: [
+        { id: "fifo_box_1", boxNumber: "FIFO Koli 1", quantity: 2, initialQuantity: 2, status: "available" },
+        { id: "fifo_box_2", boxNumber: "FIFO Koli 2", quantity: 3, initialQuantity: 3, status: "available" }
+      ]
+    });
+    const fifoBoxSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{ productId: fifoBoxProduct.id, quantity: 3 }],
+      amountPaid: 0,
+      idempotencyKey: "fifo_box_sale_001"
+    });
+    const fifoBoxAfterSale = await productRepoA.getById(fifoBoxProduct.id, "usr_repo_owner_a");
+    const fifoBoxAllocations = fifoBoxSale.items[0]?.boxAllocations || [];
+    recordResult(
+      Boolean(
+        fifoBoxAfterSale?.stock === 2 &&
+        fifoBoxAfterSale?.boxes?.[0]?.quantity === 0 &&
+        fifoBoxAfterSale?.boxes?.[1]?.quantity === 2 &&
+        fifoBoxAllocations.length === 2 &&
+        fifoBoxAllocations[0]?.boxId === "fifo_box_1" &&
+        fifoBoxAllocations[0]?.quantity === 2 &&
+        fifoBoxAllocations[1]?.boxId === "fifo_box_2" &&
+        fifoBoxAllocations[1]?.quantity === 1
+      ),
+      "FIFO satışında hangi koliden kaç adet çıktığı fişe kaydedilir"
+    );
+    const fifoBoxCancel = await salesRepoA.cancelSale(
+      fifoBoxSale.id,
+      "usr_repo_owner_a",
+      "FIFO koli iade testi",
+      "fifo_box_cancel_001"
+    );
+    const fifoBoxAfterCancel = await productRepoA.getById(fifoBoxProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(
+        fifoBoxCancel.stockRestored === true &&
+        fifoBoxAfterCancel?.stock === 5 &&
+        fifoBoxAfterCancel?.boxes?.[0]?.quantity === 2 &&
+        fifoBoxAfterCancel?.boxes?.[1]?.quantity === 3
+      ),
+      "FIFO koli satış iptali adetleri doğru kolilere eksiksiz iade eder"
+    );
+
+    // -------------------------------------------------------------
+    // -------------------------------------------------------------
+    // SENARYO 3D: ÇOKLU SATICI SEPET REZERVASYONU VE GERÇEK STOK ÇIKIŞI
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3D: Çoklu satıcı sepet rezervasyonu ---");
+    const reservationProduct = await productRepoA.create("usr_repo_owner_a", {
+      name: "61 Metre Rezervasyon Test Kumaşı",
+      sku: "RES-FAB-061",
+      category: "Kumaş",
+      unit: "Metre",
+      price: 100,
+      stock: 61,
+      reservedStock: 0,
+      minStock: 0,
+      rolls: [
+        { id: "res_roll_1", rollNumber: "Top 1", length: 31, initialLength: 31, status: "available" },
+        { id: "res_roll_2", rollNumber: "Top 2", length: 30, initialLength: 30, status: "available" }
+      ]
+    });
+    const ownerReservationId = "cart_usr_repo_owner_a_res_001";
+    setTestAuthenticatedUid("usr_repo_owner_a");
+    const ownerReservedProduct = await salesRepoA.reserveStock("usr_repo_owner_a", reservationProduct.id, 10, ownerReservationId);
+    recordResult(
+      Boolean(ownerReservedProduct.reservedStock === 10 && getAvailableStock(ownerReservedProduct) === 51),
+      "İlk satıcı 10 metreyi sepete eklediğinde diğer satıcılara açık stok 61m yerine 51m görünür"
+    );
+
+    let manualStockReductionBlocked = false;
+    try {
+      await productRepoA.update(reservationProduct.id, { stock: 9 }, "usr_repo_owner_a");
+    } catch (err: any) {
+      manualStockReductionBlocked = String(err?.message || "").includes("aktif satış sepetlerinde ayrılmış miktarın altına");
+    }
+    recordResult(manualStockReductionBlocked, "Elle stok düzenleme aktif sepetlerde ayrılmış miktarın altına inemez");
+
+    const reservedProductSnapshot = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
+    const unsafeRollEdit = (reservedProductSnapshot?.rolls || []).map(roll => ({
+      ...roll,
+      length: roll.id === "res_roll_1" ? 5 : roll.length
+    }));
+    let manualRollReductionBlocked = false;
+    try {
+      await productRepoA.update(reservationProduct.id, { rolls: unsafeRollEdit, stock: 35 }, "usr_repo_owner_a");
+    } catch (err: any) {
+      manualRollReductionBlocked = String(err?.message || "").toLocaleLowerCase("tr-TR").includes("aktif satış sepetlerinde ayrılmış");
+    }
+    recordResult(manualRollReductionBlocked, "Elle düzenleme rezerve edilen metrajı top bazında da korur");
+
+    await dbA.collection("stock_reservations").doc(ownerReservationId).update({
+      expiresAt: new Date(Date.now() - 60_000).toISOString()
+    });
+    await salesRepoA.cleanupExpiredReservations("usr_repo_owner_a");
+    const afterExpiredHoldRelease = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(afterExpiredHoldRelease && getAvailableStock(afterExpiredHoldRelease) === 61 && Number(afterExpiredHoldRelease.reservedStock || 0) === 0),
+      "Süresi dolan 10 metrelik sepet ayırması otomatik çözülür ve stok tekrar 61 metre olur"
+    );
+    const renewedOwnerReservation = await salesRepoA.reserveStock("usr_repo_owner_a", reservationProduct.id, 10, ownerReservationId);
+    recordResult(
+      Boolean(getAvailableStock(renewedOwnerReservation) === 51),
+      "Aynı satıcı süresi dolan kendi sepet rezervasyonunu güvenle yenileyebilir"
+    );
+
+    const staffUserRepoA = new FirebaseUserRepository(dbStaffA);
+    const salesRepoStaffA = new FirebaseSalesRepository(staffUserRepoA, dbStaffA);
+    const staffReservationId = "cart_usr_repo_staff_a_res_001";
+    setTestAuthenticatedUid("usr_repo_staff_a");
+    const staffReservedProduct = await salesRepoStaffA.reserveStock("usr_repo_staff_a", reservationProduct.id, 45, staffReservationId);
+    recordResult(
+      Boolean(getAvailableStock(staffReservedProduct) === 6),
+      "Aynı firmadaki ikinci satıcı yalnızca kalan 51 metreden 45 metre ayırabilir"
+    );
+
+    let overReservationBlocked = false;
+    try {
+      await salesRepoStaffA.reserveStock("usr_repo_staff_a", reservationProduct.id, 7, "cart_usr_repo_staff_a_res_over");
+    } catch (err: any) {
+      overReservationBlocked = String(err?.message || "").includes("Yetersiz kullanılabilir stok");
+    }
+    recordResult(overReservationBlocked, "İki satıcı aynı 61 metreyi aşan toplam miktarı rezerve edemez");
+
+    await salesRepoStaffA.releaseStockReservation("usr_repo_staff_a", staffReservationId);
+    const afterStaffRelease = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(afterStaffRelease && getAvailableStock(afterStaffRelease) === 51),
+      "İkinci satıcının sepeti boşaltıldığında yalnızca kendi 45 metresi yeniden satışa açılır"
+    );
+
+    setTestAuthenticatedUid("usr_repo_owner_a");
+    const reservedSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{ productId: reservationProduct.id, quantity: 10, cutLength: 10, reservationId: ownerReservationId }],
+      amountPaid: 0,
+      idempotencyKey: "reservation_sale_001"
+    });
+    const afterReservedSale = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(afterReservedSale && reservedSale.stockDeducted === true && afterReservedSale.stock === 51 && Number(afterReservedSale.reservedStock || 0) === 0 && getAvailableStock(afterReservedSale) === 51),
+      "Rezerve edilen 10 metre satışta ikinci kez düşülmez; fiziksel ve satılabilir stok 51 metre olur"
+    );
+    const reservationSaleCancel = await salesRepoA.cancelSale(reservedSale.id, "usr_repo_owner_a", "Rezervasyon testi iadesi", "reservation_cancel_001");
+    const afterReservationCancel = await productRepoA.getById(reservationProduct.id, "usr_repo_owner_a");
+    recordResult(
+      Boolean(afterReservationCancel && reservationSaleCancel.stockRestored === true && afterReservationCancel.stock === 61 && getAvailableStock(afterReservationCancel) === 61),
+      "Satış iptalinde rezerve edilmiş metraj doğru kumaş toplarına geri yüklenir"
+    );
+
+    // -------------------------------------------------------------
+    // SENARYO 3E: AYRI TOP ÜRÜNLERİN GRUPLANMASI VE GRUP ÜZERİNDEN SATIŞ
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3E: Üç fiziksel kumaş topu tek ürün olarak satış ---");
+    const groupedTopProducts: Product[] = [];
+    // All physical rolls belong to one explicitly selected product family.
+    const groupedTopFamilyId = "family_legacy_fabric_group_test";
+    const groupedTopInputs = [
+      { id: "group_roll_1", rollNumber: "Top #1", length: 5, stock: 5, sku: "GRP-FAB-001" },
+      { id: "group_roll_2", rollNumber: "Top #2", length: 33, stock: 33, sku: "GRP-FAB-002" },
+      { id: "group_roll_3", rollNumber: "Top #3", length: 23, stock: 23, sku: "GRP-FAB-003" }
+    ];
+    for (const top of groupedTopInputs) {
+      const created = await productRepoA.create("usr_repo_owner_a", {
+        name: "Premium Pamuk Kumaş - " + top.rollNumber,
+        productFamilyId: groupedTopFamilyId,
+        variantLabel: top.rollNumber,
+        sku: top.sku,
+        category: "Kumaş",
+        unit: "Metre",
+        price: 250,
+        stock: top.stock,
+        minStock: 0,
+        metadata: { fabricType: "Pamuk", color: "Mavi", width: "150cm", rollNumber: top.rollNumber },
+        rolls: [{
+          id: top.id,
+          rollNumber: top.rollNumber,
+          length: top.length,
+          initialLength: top.length,
+          status: "available"
+        }]
+      });
+      groupedTopProducts.push(created);
+    }
+
+    const groupedCatalog = groupFabricProducts(groupedTopProducts);
+    recordResult(
+      Boolean(groupedCatalog.length === 1 && groupedCatalog[0].name === "Premium Pamuk Kumaş" &&
+        groupedCatalog[0].stock === 61 && groupedCatalog[0].rolls?.length === 3),
+      "Üç fiziksel top kaydı 5+33+23 toplam 61 metre tek ürün satırında görünür"
+    );
+
+    const groupedReservationId = "cart_usr_repo_owner_a_grouped_001";
+    setTestAuthenticatedUid("usr_repo_owner_a");
+    await salesRepoA.reserveStock(
+      "usr_repo_owner_a",
+      groupedCatalog[0].id,
+      10,
+      groupedReservationId,
+      undefined,
+      groupedCatalog[0].groupProductIds
+    );
+    const groupedAfterOwnerHold = await Promise.all(
+      groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    const groupedAfterOwnerHoldList = groupedAfterOwnerHold.filter((product): product is Product => Boolean(product));
+    const groupedAfterOwnerHoldView = groupFabricProducts(groupedAfterOwnerHoldList);
+    recordResult(
+      Boolean(groupedAfterOwnerHoldView.length === 1 && getGroupedAvailableStock(groupedAfterOwnerHoldView[0]) === 51),
+      "Birinci satıcı gruptan 10 metre ayırınca tüm satıcılar toplam 51 metre görür"
+    );
+
+    const groupedStaffReservationId = "cart_usr_repo_staff_a_grouped_001";
+    setTestAuthenticatedUid("usr_repo_staff_a");
+    await salesRepoStaffA.reserveStock(
+      "usr_repo_staff_a",
+      groupedCatalog[0].id,
+      45,
+      groupedStaffReservationId,
+      undefined,
+      groupedCatalog[0].groupProductIds
+    );
+    const groupedAfterStaffHold = await Promise.all(
+      groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    const groupedAfterStaffView = groupFabricProducts(groupedAfterStaffHold.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(groupedAfterStaffView.length === 1 && getGroupedAvailableStock(groupedAfterStaffView[0]) === 6),
+      "İkinci satıcı aynı üç top üzerinden kalan miktarın yalnızca 45 metresini ayırabilir"
+    );
+
+    let groupedOverReservationBlocked = false;
+    try {
+      await salesRepoStaffA.reserveStock(
+        "usr_repo_staff_a",
+        groupedCatalog[0].id,
+        7,
+        "cart_usr_repo_staff_a_grouped_over",
+        undefined,
+        groupedCatalog[0].groupProductIds
+      );
+    } catch (err: any) {
+      groupedOverReservationBlocked = String(err?.message || "").includes("Yetersiz kullanılabilir kumaş");
+    }
+    recordResult(groupedOverReservationBlocked, "Gruplanmış üç top üzerinden toplam satılabilir miktarın üzerinde rezervasyon engellenir");
+
+    setTestAuthenticatedUid("usr_repo_staff_a");
+    await salesRepoStaffA.releaseStockReservation("usr_repo_staff_a", groupedStaffReservationId);
+    setTestAuthenticatedUid("usr_repo_owner_a");
+    const groupedBeforeSale = await Promise.all(
+      groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    const groupedBeforeSaleView = groupFabricProducts(groupedBeforeSale.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(groupedBeforeSaleView.length === 1 && getGroupedAvailableStock(groupedBeforeSaleView[0]) === 51),
+      "İkinci satıcının sepeti boşaltılınca 45 metre grupta yeniden satışa açılır"
+    );
+
+    const groupedSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{
+        productId: groupedCatalog[0].id,
+        quantity: 10,
+        cutLength: 10,
+        reservationId: groupedReservationId,
+        productIds: groupedCatalog[0].groupProductIds
+      }],
+      amountPaid: 0,
+      idempotencyKey: "grouped_fabric_sale_001"
+    });
+    const groupedAfterSale = await Promise.all(
+      groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    const groupedAfterSaleView = groupFabricProducts(groupedAfterSale.filter((product): product is Product => Boolean(product)));
+    const groupedSaleAllocations = (groupedSale.items[0] as any)?.productAllocations || [];
+    recordResult(
+      Boolean(groupedAfterSaleView.length === 1 && getGroupedAvailableStock(groupedAfterSaleView[0]) === 51 &&
+        groupedSale.stockDeducted === true && groupedSaleAllocations.length === 2),
+      "Tek ürün satışı 10 metreyi iki fiziksel topa doğru dağıtır ve toplam stok 51 metrede kalır"
+    );
+
+    const groupedSaleCancel = await salesRepoA.cancelSale(
+      groupedSale.id,
+      "usr_repo_owner_a",
+      "Gruplanmış kumaş satış iadesi",
+      "grouped_fabric_cancel_001"
+    );
+    const groupedAfterCancel = await Promise.all(
+      groupedTopProducts.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    const groupedAfterCancelView = groupFabricProducts(groupedAfterCancel.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(groupedSaleCancel.stockRestored === true && groupedAfterCancelView.length === 1 &&
+        getGroupedAvailableStock(groupedAfterCancelView[0]) === 61 &&
+        groupedAfterCancelView[0].rolls?.reduce((sum, roll) => sum + Number(roll.length || 0), 0) === 61),
+      "Gruplanmış satış iptal edilince 10 metre doğru fiziksel toplara geri iade edilir"
+    );
+
+    // -------------------------------------------------------------
+    // SENARYO 3F: GENEL ÜRÜN VARYANTLARINDA GRUPLU STOK REZERVASYONU VE SATIŞ
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3F: Genel ürün varyantlarında aile stoğu ve satış ---");
+    const shoeFamilyId = "family_shoe_group_repo_test";
+    const shoeVariants: Product[] = [];
+    for (const variant of [
+      { id: "shoe_variant_black_40", label: "Siyah / 40", stock: 4, sku: "SHOE-BLK-40" },
+      { id: "shoe_variant_black_41", label: "Siyah / 41", stock: 6, sku: "SHOE-BLK-41" }
+    ]) {
+      const created = await productRepoA.create("usr_repo_owner_a", {
+        name: "Koşu Ayakkabısı", productFamilyId: shoeFamilyId, variantLabel: variant.label,
+        sku: variant.sku, category: "Ayakkabı", unit: "Adet", price: 1200,
+        stock: variant.stock, minStock: 0, attributes: { Varyant: variant.label }
+      });
+      shoeVariants.push(created);
+    }
+    const groupedShoesForSale = groupProducts(shoeVariants);
+    recordResult(
+      Boolean(groupedShoesForSale.length === 1 && groupedShoesForSale[0].stock === 10 && groupedShoesForSale[0].groupMembers?.length === 2),
+      "Ayakkabının iki numara varyantı tek ana ürün ve toplam 10 adet stok olarak görünür"
+    );
+    const shoeReservationId = "cart_usr_repo_owner_a_shoes_grouped_001";
+    setTestAuthenticatedUid("usr_repo_owner_a");
+    await salesRepoA.reserveStock("usr_repo_owner_a", groupedShoesForSale[0].id, 7, shoeReservationId, undefined, groupedShoesForSale[0].groupProductIds);
+    const shoesAfterHold = await Promise.all(shoeVariants.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a")));
+    const shoesAfterHoldView = groupProducts(shoesAfterHold.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(shoesAfterHoldView.length === 1 && getGroupedAvailableStock(shoesAfterHoldView[0]) === 3),
+      "Sepette 7 ayakkabı rezerve edilince ailede yalnızca 3 adet satışa açık kalır"
+    );
+    const shoeSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{ productId: groupedShoesForSale[0].id, quantity: 7, reservationId: shoeReservationId, productIds: groupedShoesForSale[0].groupProductIds }],
+      amountPaid: 0, idempotencyKey: "grouped_shoe_sale_001"
+    });
+    const shoesAfterSale = await Promise.all(shoeVariants.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a")));
+    const shoesAfterSaleView = groupProducts(shoesAfterSale.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(shoeSale.stockDeducted === true && shoesAfterSaleView.length === 1 && shoesAfterSaleView[0].stock === 3),
+      "Varyant ailesinden 7 adet satışta toplam fiziksel stok 3 adede iner"
+    );
+    const shoeSaleCancel = await salesRepoA.cancelSale(shoeSale.id, "usr_repo_owner_a", "Ayakkabı grup satış iptali", "grouped_shoe_cancel_001");
+    const shoesAfterCancel = await Promise.all(shoeVariants.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a")));
+    const shoesAfterCancelView = groupProducts(shoesAfterCancel.filter((product): product is Product => Boolean(product)));
+    recordResult(
+      Boolean(shoeSaleCancel.stockRestored === true && shoesAfterCancelView.length === 1 && shoesAfterCancelView[0].stock === 10),
+      "Grup satış iptalinde ayakkabı varyantlarının toplam stoğu 10 adede geri döner"
+    );
+
+    // -------------------------------------------------------------
+    // SENARYO 3G: SEÇİLEN GENEL VARYANTIN TEK BAŞINA SATILMASI VE İADESİ
+    // -------------------------------------------------------------
+    console.log("\n--- BÖLÜM 3G: Seçilen tornavida varyantından tekil stok çıkışı ---");
+    const screwdriverFamilyId = "family_screwdriver_black_repo_test";
+    const screwdriverVariants: Product[] = [];
+    for (const variant of [
+      { label: "Siyah / Yıldız", stock: 8, sku: "TOR-SIYAH-YILDIZ" },
+      { label: "Siyah / Düz", stock: 9, sku: "TOR-SIYAH-DUZ" },
+      { label: "Siyah / Philips", stock: 4, sku: "TOR-SIYAH-PHILIPS" }
+    ]) {
+      const created = await productRepoA.create("usr_repo_owner_a", {
+        name: "Tornavida", productFamilyId: screwdriverFamilyId, variantLabel: variant.label,
+        sku: variant.sku, category: "Hırdavat", unit: "Adet", price: 150,
+        stock: variant.stock, minStock: 0, attributes: { Renk: "Siyah", Uç: variant.label.split(" / ")[1] }
+      });
+      screwdriverVariants.push(created);
+    }
+    const groupedScrewdriversForSale = groupProducts(screwdriverVariants);
+    recordResult(
+      Boolean(groupedScrewdriversForSale.length === 1 && groupedScrewdriversForSale[0].stock === 21 && groupedScrewdriversForSale[0].groupMembers?.length === 3),
+      "Siyah tornavidanın üç uç tipi tek ana ürün ve toplam 21 adet stok olarak görünür"
+    );
+    const selectedScrewdriver = screwdriverVariants[1];
+    const screwdriverSale = await salesRepoA.processTransaction("usr_repo_owner_a", {
+      items: [{ productId: selectedScrewdriver.id, quantity: 2 }],
+      amountPaid: 0,
+      idempotencyKey: "screwdriver_flat_variant_sale_001"
+    });
+    const screwdriverAfterSale = await Promise.all(
+      screwdriverVariants.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    recordResult(
+      Boolean(
+        screwdriverSale.stockDeducted === true &&
+        screwdriverAfterSale[0]?.stock === 8 &&
+        screwdriverAfterSale[1]?.stock === 7 &&
+        screwdriverAfterSale[2]?.stock === 4 &&
+        groupProducts(screwdriverAfterSale.filter((product): product is Product => Boolean(product)))[0]?.stock === 19
+      ),
+      "Düz uçtan 2 adet satılınca yalnızca Düz varyantı 9'dan 7'ye iner; diğer uçlar değişmez"
+    );
+    const screwdriverSaleCancel = await salesRepoA.cancelSale(
+      screwdriverSale.id,
+      "usr_repo_owner_a",
+      "Tornavida varyant satış iptali",
+      "screwdriver_flat_variant_cancel_001"
+    );
+    const screwdriverAfterCancel = await Promise.all(
+      screwdriverVariants.map((product) => productRepoA.getById(product.id, "usr_repo_owner_a"))
+    );
+    recordResult(
+      Boolean(
+        screwdriverSaleCancel.stockRestored === true &&
+        screwdriverAfterCancel[0]?.stock === 8 &&
+        screwdriverAfterCancel[1]?.stock === 9 &&
+        screwdriverAfterCancel[2]?.stock === 4 &&
+        groupProducts(screwdriverAfterCancel.filter((product): product is Product => Boolean(product)))[0]?.stock === 21
+      ),
+      "Düz uç satış iptalinde yalnızca seçilen varyantın 2 adedi geri gelir; aile toplamı 21 olur"
+    );
+
     // SENARYO 4: SİPARİŞ OLUŞTURMA VE ATOMİK İPTAL İLE METRAJ İADESİ
     // -------------------------------------------------------------
     console.log("\n--- BÖLÜM 4: FirebaseOrderRepository (createAtomic & cancelOrderAtomic) ---");

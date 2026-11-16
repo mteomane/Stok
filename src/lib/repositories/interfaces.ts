@@ -65,6 +65,9 @@ export interface ProcessSaleItemInput {
   selectedRollId?: string;
   cutLength?: number;
   selectedBoxId?: string;
+  reservationId?: string;
+  /** All underlying stock documents represented by one grouped textile catalog row. */
+  productIds?: string[];
 }
 
 export interface ProcessSaleParams {
@@ -119,6 +122,9 @@ export interface SalesRepository {
   getAll(uid: string): Promise<Sale[]>;
   create(uid: string, sale: Omit<Sale, "id">): Promise<Sale>;
   processTransaction(uid: string, params: ProcessSaleParams): Promise<Sale>;
+  reserveStock(uid: string, productId: string, quantity: number, reservationId: string, selectedBoxId?: string, groupProductIds?: string[]): Promise<Product>;
+  releaseStockReservation(uid: string, reservationId: string): Promise<Product | null>;
+  cleanupExpiredReservations(uid: string): Promise<void>;
   cancelAtomic(uid: string, params: CancelSaleParams): Promise<Sale>;
   subscribe?(uid: string, onUpdate: (sales: Sale[]) => void, onError?: (err: Error) => void): () => void;
 }

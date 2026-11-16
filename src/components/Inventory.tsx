@@ -42,7 +42,8 @@ import { UniversalImportModal } from "./UniversalImportModal";
 import { QuickProductModal } from "./QuickProductModal";
 import { QuickReplenishModal } from "./QuickReplenishModal";
 import { QRScanner } from "./QRScanner";
-import { getSectorProfile, shouldShowRolls, SECTOR_PROFILES } from "../lib/sectorConfig";
+import { getAvailableStock, getSectorProfile, shouldShowRolls, SECTOR_PROFILES } from "../lib/sectorConfig";
+import { groupFabricProducts, getGroupedAvailableStock } from "../lib/productGrouping";
 import { exportService } from "../lib/export/ExportService";
 import { triggerFileDownload } from "../lib/export/fileDownload";
 
@@ -244,6 +245,13 @@ export function Inventory({
 
   // Fabric rolls management states
   const [selectedRollProduct, setSelectedRollProduct] = useState<Product | null>(null);
+  const [showRollDetails, setShowRollDetails] = useState(false);
+
+  useEffect(() => {
+    if (!selectedRollProduct) return;
+    const latest = groupFabricProducts(products).find((product) => product.id === selectedRollProduct.id);
+    if (latest && latest !== selectedRollProduct) setSelectedRollProduct(latest);
+  }, [products, selectedRollProduct?.id]);
   const [newRollNumber, setNewRollNumber] = useState("");
   const [newRollLength, setNewRollLength] = useState("");
   const [newRollColorCode, setNewRollColorCode] = useState("");
@@ -290,7 +298,60 @@ export function Inventory({
     }
 
     const currentRolls = selectedRollProduct.rolls || [];
-    const rollNum = newRollNumber.trim() || `Top #${currentRolls.length + 1}`;
+    const rollNum = newRollNumber.trim() || ("Top #" + (currentRolls.length + 1));
+
+    if (selectedRollProduct.groupProductIds && selectedRollProduct.groupMembers?.length) {
+      const source = selectedRollProduct.groupMembers[0];
+      const newRoll: FabricRoll = {
+        id: "R-" + Math.random().toString(36).substring(2, 8).toUpperCase(),
+        rollNumber: rollNum,
+        length: len,
+        initialLength: len,
+        soldLength: 0,
+        colorCode: newRollColorCode.trim() || undefined,
+        colorName: newRollColorName.trim() || undefined,
+        supplier: newRollSupplier.trim() || undefined,
+        entryDate: new Date().toISOString().split("T")[0],
+        status: "available",
+        createdAt: new Date().toISOString()
+      };
+      const metadata = {
+        ...(source.metadata || {}),
+        rollNumber: rollNum,
+        length: len,
+        ...(newRollColorCode.trim() ? { colorCode: newRollColorCode.trim() } : {}),
+        ...(newRollColorName.trim() ? { colorName: newRollColorName.trim(), color: newRollColorName.trim() } : {})
+      };
+      const attributes = {
+        ...(source.attributes || {}),
+        "Rulo No": rollNum
+      };
+      try {
+        await onAddProduct({
+          name: source.name,
+          sku: "",
+          category: source.category,
+          unit: source.unit || "Metre",
+          price: source.price,
+          costPrice: source.costPrice,
+          stock: len,
+          minStock: source.minStock,
+          brand: source.brand,
+          attributes,
+          metadata: { ...metadata, fabricType: source.metadata?.fabricType },
+          rolls: [newRoll]
+        });
+        setNewRollNumber("");
+        setNewRollLength("");
+        setNewRollColorCode("");
+        setNewRollColorName("");
+        setNewRollSupplier("");
+        if (onRefreshData) await onRefreshData();
+      } catch (err: any) {
+        alert("Yeni top eklenemedi: " + (err?.message || "Hata"));
+      }
+      return;
+    }
     
     const newRoll: FabricRoll = {
       id: "R-" + Math.random().toString(36).substring(2, 8).toUpperCase(),
@@ -339,6 +400,53 @@ export function Inventory({
       alert("Lütfen geçerli bir rulo uzunluğu girin.");
       return;
     }
+    const targetRoll = (selectedRollProduct.rolls || []).find((r) => r.id === rollId);
+    if (!targetRoll) {
+      alert("Düzenlenecek kumaş topu bulunamadı.");
+      return;
+    }
+    const reservedLength = Number(targetRoll.reservedLength || 0);
+    if (newLen < reservedLength || (editingRollStatus === "sold" && reservedLength > 0)) {
+      alert("Bu topun " + reservedLength + " metresi aktif satış sepetlerinde ayrılmış. Rezervasyon bitmeden bu miktarın altına düşürülemez veya top satıldı olarak kapatılamaz.");
+      return;
+    }
+
+    if (selectedRollProduct.groupProductIds && targetRoll.productId) {
+      const source = products.find((entry) => entry.id === targetRoll.productId);
+      if (!source) {
+        alert("Düzenlenecek fiziksel top kaydı bulunamadı.");
+        return;
+      }
+      try {
+        if (String(targetRoll.id).startsWith("product-roll:")) {
+          await onUpdateProduct(source.id, {
+            stock: newLen,
+            metadata: { ...(source.metadata || {}), rollNumber: editingRollNumber.trim() || targetRoll.rollNumber },
+            attributes: { ...(source.attributes || {}), "Rulo No": editingRollNumber.trim() || targetRoll.rollNumber }
+          });
+        } else {
+          const originalRollId = String(targetRoll.id).slice((source.id + "::").length);
+          const sourceRolls = source.rolls || [];
+          const nextSourceRolls = sourceRolls.map((roll) => roll.id === originalRollId ? {
+            ...roll,
+            rollNumber: editingRollNumber.trim() || roll.rollNumber,
+            length: newLen,
+            initialLength: roll.initialLength !== undefined ? Number(roll.initialLength) : Math.max(Number(roll.length), newLen),
+            soldLength: round2(Math.max(0, Number(roll.initialLength ?? roll.length) - newLen)),
+            status: newLen <= 0 ? "sold" as const : (editingRollStatus === "sold" ? "available" as const : editingRollStatus)
+          } : roll);
+          await onUpdateProduct(source.id, {
+            rolls: nextSourceRolls,
+            stock: round2(nextSourceRolls.reduce((sum, roll) => sum + Number(roll.length || 0), 0))
+          });
+        }
+        setEditingRollId(null);
+        if (onRefreshData) await onRefreshData();
+      } catch (err: any) {
+        alert("Top güncellenemedi: " + (err?.message || "Hata"));
+      }
+      return;
+    }
 
     const updatedRolls = (selectedRollProduct.rolls || []).map((r) => {
       if (r.id === rollId) {
@@ -378,7 +486,34 @@ export function Inventory({
 
   const handleDeleteRoll = async (rollId: string) => {
     if (!selectedRollProduct) return;
+    const targetRoll = (selectedRollProduct.rolls || []).find((r) => r.id === rollId);
+    if (!targetRoll) return;
+    if (Number(targetRoll.reservedLength || 0) > 0) {
+      alert("Bu topun " + targetRoll.reservedLength + " metresi aktif satış sepetlerinde ayrılmış. Rezervasyon bitmeden top silinemez.");
+      return;
+    }
     if (!confirm("Bu kumaş topunu silmek istediğinize emin misiniz? Bu işlem toplam stok miktarını güncelleyecektir.")) return;
+
+    if (selectedRollProduct.groupProductIds && targetRoll.productId) {
+      const source = products.find((entry) => entry.id === targetRoll.productId);
+      if (!source) return;
+      try {
+        if (String(targetRoll.id).startsWith("product-roll:")) {
+          await onDeleteProduct(source.id);
+        } else {
+          const originalRollId = String(targetRoll.id).slice((source.id + "::").length);
+          const nextSourceRolls = (source.rolls || []).filter((roll) => roll.id !== originalRollId);
+          await onUpdateProduct(source.id, {
+            rolls: nextSourceRolls,
+            stock: round2(nextSourceRolls.reduce((sum, roll) => sum + Number(roll.length || 0), 0))
+          });
+        }
+        if (onRefreshData) await onRefreshData();
+      } catch (err: any) {
+        alert("Top silinemedi: " + (err?.message || "Hata"));
+      }
+      return;
+    }
 
     const updatedRolls = (selectedRollProduct.rolls || []).filter((r) => r.id !== rollId);
     const newTotalStock = round2(updatedRolls.reduce((sum, r) => sum + (Number(r.length) || 0), 0));
@@ -423,18 +558,19 @@ export function Inventory({
     return getSectorProfile(key).name;
   };
 
-  // Memoized categories extraction
-  const categories = useMemo(() => ["Tümü", ...Array.from(new Set(products.map((p) => p.category || "Genel")))], [products]);
+  const displayProducts = useMemo(() => groupFabricProducts(products), [products]);
 
-  // Low stock count (active products only)
-  const lowStockCount = useMemo(() => products.filter((p) => p.isActive !== false && p.stock <= p.minStock).length, [products]);
-  // Archived count
-  const archivedCount = useMemo(() => products.filter((p) => p.isActive === false).length, [products]);
+  // Memoized categories extraction
+  const categories = useMemo(() => ["Tümü", ...Array.from(new Set(displayProducts.map((p) => p.category || "Genel")))], [displayProducts]);
+
+  // Counts are based on displayed fabric varieties, not individual physical top records.
+  const lowStockCount = useMemo(() => displayProducts.filter((p) => p.isActive !== false && getGroupedAvailableStock(p) <= p.minStock).length, [displayProducts]);
+  const archivedCount = useMemo(() => displayProducts.filter((p) => p.isActive === false).length, [displayProducts]);
 
   // Memoized product filtering
   const filteredProducts = useMemo(() => {
     const q = debouncedSearch.toLowerCase().trim();
-    return products.filter((p) => {
+    return displayProducts.filter((p) => {
       const isArchived = p.isActive === false;
       if (showArchived) {
         if (!isArchived) return false;
@@ -442,17 +578,19 @@ export function Inventory({
         if (isArchived) return false;
       }
 
-      const matchesSearch = !q ||
-        p.name.toLowerCase().includes(q) || 
-        p.sku.toLowerCase().includes(q) ||
-        (p.barcode && p.barcode.toLowerCase().includes(q)) ||
-        (p.brand && p.brand.toLowerCase().includes(q)) ||
-        (p.category && p.category.toLowerCase().includes(q));
+      const sourceProducts = p.groupMembers?.length ? p.groupMembers : [p];
+      const matchesSearch = !q || sourceProducts.some((member) =>
+        member.name.toLowerCase().includes(q) ||
+        member.sku.toLowerCase().includes(q) ||
+        (member.barcode && member.barcode.toLowerCase().includes(q)) ||
+        (member.brand && member.brand.toLowerCase().includes(q)) ||
+        (member.category && member.category.toLowerCase().includes(q))
+      );
       const matchesCategory = selectedCategory === "Tümü" || p.category === selectedCategory;
-      const matchesLowStock = !onlyLowStock || p.stock <= p.minStock;
+      const matchesLowStock = !onlyLowStock || getGroupedAvailableStock(p) <= p.minStock;
       return matchesSearch && matchesCategory && matchesLowStock;
     });
-  }, [products, showArchived, debouncedSearch, selectedCategory, onlyLowStock]);
+  }, [displayProducts, showArchived, debouncedSearch, selectedCategory, onlyLowStock]);
 
   const totalPages = Math.ceil(filteredProducts.length / pageSize) || 1;
   const paginatedProducts = useMemo(() => {
@@ -563,7 +701,12 @@ export function Inventory({
   };
 
   const adjustStock = async (productId: string, currentStock: number, adjustment: number) => {
-    const newStock = roundQty(Math.max(0, currentStock + adjustment));
+    const product = products.find((p) => p.id === productId);
+    const newStock = roundQty(Math.max(0, Number(product?.stock || 0) + adjustment));
+    if (newStock < Number(product?.reservedStock || 0)) {
+      alert("Bu ürünün bir kısmı satış sepetlerinde ayrılmış. Ayrılmış miktarın altına stok düşürülemez.");
+      return;
+    }
     await onUpdateProduct(productId, { stock: newStock });
   };
 
@@ -847,7 +990,7 @@ export function Inventory({
 
           {/* Product Rows */}
           {paginatedProducts.map((p) => {
-            const isLowStock = p.stock <= p.minStock;
+            const isLowStock = getAvailableStock(p) <= p.minStock;
             const isHighlighted = p.id === highlightProductId;
             const isExpanded = p.id === expandedProductId;
 
@@ -910,7 +1053,7 @@ export function Inventory({
                   <div className="col-span-2 flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                     <div className="text-right">
                       <div className={`text-sm font-black ${isLowStock ? "text-rose-600" : "text-emerald-700"}`}>
-                        {p.stock}{" "}
+                        {getAvailableStock(p)}{" "}
                         <span className="text-xs font-normal text-slate-500">
                           {p.unit || (p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas") ? "m" : p.packageUnitName || "ad")}
                         </span>
@@ -1026,7 +1169,7 @@ export function Inventory({
 
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <span className={`font-bold text-xs ${isLowStock ? "text-rose-600" : "text-emerald-700"}`}>
-                        {p.stock}{" "}
+                        {getAvailableStock(p)}{" "}
                         {p.unit || (p.category?.toLowerCase().includes("kumaş") || p.category?.toLowerCase().includes("kumas") ? "m" : p.packageUnitName || "ad")}
                       </span>
                       <ChevronDown
@@ -1044,6 +1187,32 @@ export function Inventory({
                     className="bg-slate-50/90 border-t border-slate-200 p-4 space-y-4 animate-fade-in"
                     onClick={(e) => e.stopPropagation()}
                   >
+                    {/* Universal product variants stay hidden until the parent row is expanded. */}
+                    {p.groupMembers && p.groupMembers.length > 1 && (
+                      <div className="rounded-xl border border-indigo-100 bg-white overflow-hidden">
+                        <div className="px-3 py-2 bg-indigo-50/70 border-b border-indigo-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-700">Alt kırılımlar</span>
+                          <span className="text-[10px] text-indigo-600 font-semibold">{p.groupMembers.length} varyant · toplam {getGroupedAvailableStock(p)} {p.unit || "Adet"}</span>
+                        </div>
+                        <div className="divide-y divide-slate-100">
+                          {p.groupMembers.map((member) => (
+                            <div key={member.id} className="px-3 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-bold text-slate-800 truncate">{member.variantLabel || member.name}</div>
+                                <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                                  {member.sku || "SKU yok"}{member.barcode ? " · " + member.barcode : ""}
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <div className="text-xs font-bold text-slate-800">{getAvailableStock(member)} {member.unit || p.unit || "Adet"}</div>
+                                <div className="text-[10px] text-slate-500">{formatCurrency(member.price)}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Dynamic Sector Attributes & Smart Badges */}
                     {((p.metadata && Object.keys(p.metadata).length > 0) || (p.attributes && Object.keys(p.attributes).length > 0)) && (
                       <div>
@@ -1157,14 +1326,14 @@ export function Inventory({
                       <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 text-xs space-y-2">
                         <div className="flex justify-between items-center">
                           <div>
-                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide block">Rulo / Top Takibi</span>
+                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide block">Kumaş Stoku</span>
                             <span className="font-bold text-indigo-700">
-                              {p.rolls?.length || 0} Adet Top ({p.stock} m)
+                              {getAvailableStock(p)} m satılabilir{Number(p.reservedStock || 0) > 0 ? " · " + p.reservedStock + " m sepette ayrılmış" : ""}
                             </span>
                           </div>
                           <button
                             type="button"
-                            onClick={() => setSelectedRollProduct(p)}
+                            onClick={() => { setShowRollDetails(false); setSelectedRollProduct(p); }}
                             className="p-1 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] rounded-lg flex items-center gap-1 active:scale-95 transition-all shadow-sm cursor-pointer"
                             title="Top Detaylarını Düzenle"
                           >
@@ -1172,31 +1341,6 @@ export function Inventory({
                             Topları Yönet
                           </button>
                         </div>
-                        {/* Tiny roll badge visualization */}
-                        {p.rolls && p.rolls.length > 0 && (
-                          <div className="flex flex-wrap gap-1 mt-1 max-h-[44px] overflow-y-auto">
-                            {p.rolls.slice(0, 5).map((r) => (
-                              <span
-                                key={r.id}
-                                className={`text-[9px] px-1.5 py-0.5 rounded font-bold font-mono ${
-                                  r.status === "sold"
-                                    ? "bg-slate-200 text-slate-500 line-through"
-                                    : r.status === "reserved"
-                                    ? "bg-amber-100 text-amber-700"
-                                    : "bg-emerald-100 text-emerald-800"
-                                }`}
-                              >
-                                {r.rollNumber} ({r.length}m)
-                              </span>
-                            ))}
-                            {p.rolls.length > 5 && (
-                              <span className="text-[9px] text-slate-400 font-bold font-mono px-1">
-                                +{p.rolls.length - 5} top daha...
-                              </span>
-                            )}
-                          </div>
-                        )}
-
                         {/* Legacy Fabric Stock Migration Option */}
                         {(!p.rolls || p.rolls.length === 0) && p.stock > 0 && (
                           <div className="bg-indigo-50/80 p-2.5 rounded-lg border border-indigo-200 flex items-center justify-between gap-2 mt-1">
@@ -1224,7 +1368,7 @@ export function Inventory({
                           <div>
                             <span className="text-[10px] text-amber-800 font-bold uppercase tracking-wide block">Koli / Kupon Takibi</span>
                             <span className="font-bold text-amber-900">
-                              {p.boxes.length} Koli ({p.stock} Adet)
+                              {p.boxes.length} Koli ({getAvailableStock(p)} satılabilir adet)
                               {p.metersPerUnit ? ` — ${roundQty(p.stock * p.metersPerUnit)}m Eşdeğer` : ""}
                             </span>
                           </div>
@@ -1250,7 +1394,7 @@ export function Inventory({
                     <div className="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
                       {/* Left: Quick Adjustments */}
                       <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-bold text-slate-500">Stok:</span>
+                        <span className="text-[11px] font-bold text-slate-500">Satılabilir stok:</span>
                         <div className="flex items-center bg-white border border-slate-200 rounded-lg p-0.5 shadow-xs">
                           <button
                             type="button"
@@ -1261,7 +1405,7 @@ export function Inventory({
                             <Minus className="w-3.5 h-3.5" />
                           </button>
                           <span className="px-2.5 text-xs font-bold text-slate-800 min-w-[28px] text-center">
-                            {p.stock}
+                            {getAvailableStock(p)}
                           </span>
                           <button
                             type="button"
@@ -1300,7 +1444,7 @@ export function Inventory({
 
                         <button
                           type="button"
-                          onClick={() => setEditingProduct(p)}
+                          onClick={() => setEditingProduct(products.find((member) => member.id === p.id) || p)}
                           title="Ürünü Düzenle"
                           className="px-2.5 py-1.5 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-slate-600 hover:text-indigo-600 font-bold text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
                         >
@@ -1881,7 +2025,7 @@ export function Inventory({
                   Kumaş Topu & Rulo Takip Kartı
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {selectedRollProduct.name} (Toplam Stok: {selectedRollProduct.stock} m)
+                  {selectedRollProduct.name} ({getAvailableStock(selectedRollProduct)} m satılabilir)
                 </p>
               </div>
               <button
@@ -1963,8 +2107,19 @@ export function Inventory({
                 </div>
               </div>
 
+              {/* Roll-level details are hidden by default to keep the product view compact. */}
+              {selectedRollProduct.rolls && selectedRollProduct.rolls.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowRollDetails((value) => !value)}
+                  className="w-full px-3 py-2.5 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-between"
+                >
+                  <span>{showRollDetails ? "Top Bazında Ayrıntıları Gizle" : "Top Bazında Ayrıntıları Aç (" + selectedRollProduct.rolls.length + " kayıt)"}</span>
+                  {showRollDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+              )}
               {/* List of current rolls */}
-              <div className="space-y-2">
+              <div className={`space-y-2 ${showRollDetails ? "" : "hidden"}`}>
                 <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Mevcut Kumaş Topları</span>
                 
                 {(!selectedRollProduct.rolls || selectedRollProduct.rolls.length === 0) ? (
@@ -2180,6 +2335,7 @@ export function Inventory({
             setQuickAddInitialName(undefined);
             if (onRefreshData) await onRefreshData();
           }}
+          onUpdateProduct={onUpdateProduct}
           onSelectExistingProduct={(existingProd) => {
             setShowQuickAddModal(false);
             setReplenishProduct(existingProd);

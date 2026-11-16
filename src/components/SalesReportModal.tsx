@@ -3,6 +3,7 @@ import { Sale, Product, CompanyInfo } from "../types";
 import { Printer, X, FileText, Calendar, DollarSign, TrendingUp, ShoppingBag, CreditCard, User, Building2 } from "lucide-react";
 import { auth } from "../lib/firebase";
 import { getCompanyInfo } from "../lib/firestoreService";
+import { calculateSalesMetrics, isCancelledSale } from "../lib/salesMetrics";
 
 interface SalesReportModalProps {
   sales: Sale[];
@@ -51,26 +52,16 @@ export function SalesReportModal({
     });
   };
 
-  // Calculations for summary
-  const totalRevenue = sales.reduce((sum, s) => sum + s.totalAmount, 0);
-  const totalTransactions = sales.length;
-  const totalItemsSold = sales.reduce(
-    (sum, s) => sum + s.items.reduce((iSum, i) => iSum + i.quantity, 0),
-    0
-  );
+  // Cancelled/refunded receipts remain in the audit table but are excluded from sales totals.
+  const {
+    completedSales,
+    cancelledTransactions,
+    totalRevenue,
+    totalTransactions,
+    totalItemsSold,
+    paymentBreakdown
+  } = calculateSalesMetrics(sales);
   const avgBasket = totalTransactions > 0 ? totalRevenue / totalTransactions : 0;
-
-  // Breakdown by payment method
-  const paymentBreakdown = sales.reduce(
-    (acc, s) => {
-      const method = s.paymentMethod || "cash";
-      if (!acc[method]) acc[method] = { count: 0, amount: 0 };
-      acc[method].count += 1;
-      acc[method].amount += s.totalAmount;
-      return acc;
-    },
-    {} as Record<string, { count: number; amount: number }>
-  );
 
   const getPaymentMethodLabel = (method: string) => {
     switch (method) {
@@ -130,7 +121,7 @@ export function SalesReportModal({
                 Satış Geçmişi & Rapor Dökümü (PDF)
               </h3>
               <p className="text-xs text-slate-400">
-                Filtrelenen Dönem: <span className="font-bold text-slate-700">{datePresetName}</span> ({sales.length} İşlem)
+                Filtrelenen Dönem: <span className="font-bold text-slate-700">{datePresetName}</span> ({completedSales.length} tamamlanan, {cancelledTransactions} iptal/iade)
               </p>
             </div>
           </div>
@@ -233,14 +224,16 @@ export function SalesReportModal({
                       <th className="py-2 px-3">Fiş No</th>
                       <th className="py-2 px-3">Müşteri</th>
                       <th className="py-2 px-3">Ödeme Yöntemi</th>
+                      <th className="py-2 px-3">Durum</th>
                       <th className="py-2 px-3">Satılan Kalemler</th>
                       <th className="py-2 px-3 text-right">Tutar</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
                     {sales.map((sale) => {
+                      const isCancelled = isCancelledSale(sale);
                       return (
-                        <tr key={sale.id} className="hover:bg-slate-50">
+                        <tr key={sale.id} className={isCancelled ? "bg-rose-50/40 text-slate-500" : "hover:bg-slate-50"}>
                           <td className="py-2 px-3 font-mono text-slate-600 whitespace-nowrap">
                             {formatDate(sale.timestamp)}
                           </td>
@@ -254,6 +247,9 @@ export function SalesReportModal({
                             <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] uppercase font-semibold">
                               {getPaymentMethodLabel(sale.paymentMethod || "cash")}
                             </span>
+                          </td>
+                          <td className="py-2 px-3 text-[10px] font-bold whitespace-nowrap">
+                            {isCancelled ? (sale.status || "İptal / İade") : "Tamamlandı"}
                           </td>
                           <td className="py-2 px-3 text-slate-600">
                             <div className="max-w-xs space-y-0.5">
@@ -275,7 +271,9 @@ export function SalesReportModal({
                             </div>
                           </td>
                           <td className="py-2 px-3 text-right font-bold text-slate-900 font-mono whitespace-nowrap">
-                            {formatCurrency(sale.totalAmount)}
+                            <span className={isCancelled ? "line-through text-slate-400" : ""}>
+                              {formatCurrency(sale.totalAmount)}
+                            </span>
                           </td>
                         </tr>
                       );
@@ -283,7 +281,7 @@ export function SalesReportModal({
                   </tbody>
                   <tfoot>
                     <tr className="bg-slate-100 font-bold text-slate-900 border-t-2 border-slate-300">
-                      <td colSpan={5} className="py-2.5 px-3 text-right uppercase">
+                      <td colSpan={6} className="py-2.5 px-3 text-right uppercase">
                         GENEL TOPLAM CİRO:
                       </td>
                       <td className="py-2.5 px-3 text-right text-emerald-600 font-mono text-xs">
