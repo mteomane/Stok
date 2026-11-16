@@ -622,7 +622,8 @@ export async function runProductionRepositoryTests() {
       Boolean(colorHierarchy.length === 1 && colorHierarchy[0].name === "DANTEL-D-60338" &&
         colorHierarchy[0].colorGroups?.length === 3 && colorHierarchy[0].stock === 104.6 &&
         colorOne?.rolls?.length === 2 && colorTwo?.rolls?.length === 1 &&
-        colorThree?.rolls?.length === 1 && Number(colorThree?.rolls?.[0]?.length) === 14),
+        colorThree?.rolls?.length === 1 && Number(colorThree?.rolls?.[0]?.length) === 14 &&
+        colorTwo?.rolls?.[0]?.productId === "color_c2_top_1"),
       "Aynı ürün tek ana satırda, renkler ayrı dallarda görünür; elle eklenen metraj da Top #1 olarak temsil edilir"
     );
 
@@ -646,7 +647,8 @@ export async function runProductionRepositoryTests() {
       Boolean(mixedColorHierarchy.length === 1 && mixedColorHierarchy[0].colorGroups?.length === 2 &&
         mixedColorHierarchy[0].colorGroups?.find((group) => group.variantLabel?.includes("C1"))?.stock === 31 &&
         mixedColorHierarchy[0].colorGroups?.find((group) => group.variantLabel?.includes("C2"))?.stock === 27.3 &&
-        mixedColorHierarchy[0].groupProductIds?.length === 1),
+        mixedColorHierarchy[0].groupProductIds?.length === 1 &&
+        mixedColorHierarchy[0].colorGroups?.every((group) => group.rolls?.every((roll) => roll.productId === "legacy_mixed_colors"))),
       "Eski tek ürün kaydında karışmış C1/C2 topları canlı veriyi değiştirmeden ekranda ayrı renk dallarına ayrılır"
     );
 
