@@ -34,7 +34,7 @@ import { setTestAuthenticatedUid } from "../src/lib/authGuard";
 import { memoryCache } from "../src/lib/cache";
 import { roundQty, round2 } from "../src/lib/repositories/firebase/helpers";
 import { getAvailableStock } from "../src/lib/sectorConfig";
-import { groupFabricProducts, groupProducts, getGroupedAvailableStock } from "../src/lib/productGrouping";
+import { groupFabricProducts, groupFabricProductsByParent, groupProducts, getGroupedAvailableStock } from "../src/lib/productGrouping";
 
 const EMULATOR_HOST = "127.0.0.1";
 const EMULATOR_PORT = 8088;
@@ -605,6 +605,21 @@ export async function runProductionRepositoryTests() {
       Boolean(groupedCatalog.length === 1 && groupedCatalog[0].name === "Premium Pamuk Kumaş" &&
         groupedCatalog[0].stock === 61 && groupedCatalog[0].rolls?.length === 3),
       "Üç fiziksel top kaydı 5+33+23 toplam 61 metre tek ürün satırında görünür"
+    );
+
+    const colorHierarchyProducts: Product[] = [
+      { id: "color_c1_top_1", name: "DANTEL-D-60338", sku: "DANTEL-C1-1", category: "Kumaş / Tekstil", unit: "Metre", price: 100, stock: 31, minStock: 0, metadata: { colorCode: "C1", colorName: "OF WHITE" }, rolls: [{ id: "c1r1", rollNumber: "Top 1", length: 31, initialLength: 31, status: "available" }] },
+      { id: "color_c1_top_2", name: "DANTEL-D-60338", sku: "DANTEL-C1-2", category: "Kumaş / Tekstil", unit: "Metre", price: 100, stock: 32.3, minStock: 0, metadata: { colorCode: "C1", colorName: "OF WHITE" }, rolls: [{ id: "c1r2", rollNumber: "Top 2", length: 32.3, initialLength: 32.3, status: "available" }] },
+      { id: "color_c2_top_1", name: "DANTEL-D-60338", sku: "DANTEL-C2-1", category: "Kumaş / Tekstil", unit: "Metre", price: 100, stock: 27.3, minStock: 0, metadata: { colorCode: "C2", colorName: "SKIN" }, rolls: [{ id: "c2r1", rollNumber: "Top 1", length: 27.3, initialLength: 27.3, status: "available" }] }
+    ];
+    const colorHierarchy = groupFabricProductsByParent(colorHierarchyProducts);
+    const colorOne = colorHierarchy[0]?.colorGroups?.find((group) => group.variantLabel?.includes("C1"));
+    const colorTwo = colorHierarchy[0]?.colorGroups?.find((group) => group.variantLabel?.includes("C2"));
+    recordResult(
+      Boolean(colorHierarchy.length === 1 && colorHierarchy[0].name === "DANTEL-D-60338" &&
+        colorHierarchy[0].colorGroups?.length === 2 && colorHierarchy[0].stock === 90.6 &&
+        colorOne?.rolls?.length === 2 && colorTwo?.rolls?.length === 1),
+      "Aynı ürün tek ana satırda, C1 ve C2 ayrı renk dallarında ve toplar kendi renklerinin altında görünür"
     );
 
     const groupedReservationId = "cart_usr_repo_owner_a_grouped_001";
