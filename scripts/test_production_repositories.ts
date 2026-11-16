@@ -635,6 +635,7 @@ export async function runProductionRepositoryTests() {
       price: 100,
       stock: 58.3,
       minStock: 0,
+      metadata: { colorCode: "C1", colorName: "OF WHITE" },
       rolls: [
         { id: "legacy_c1", rollNumber: "Top 1", colorCode: "C1", colorName: "OF WHITE", length: 31, initialLength: 31, status: "available" },
         { id: "legacy_c2", rollNumber: "Top 2", colorCode: "C2", colorName: "SKIN", length: 27.3, initialLength: 27.3, status: "available" }
