@@ -41,8 +41,8 @@ function groupKey(product: Product): string {
   const brand = normalize(product.brand || product.metadata?.brand || "");
   const unit = normalize(product.unit || "metre");
   const fabricType = attr(product, ["fabricType", "Kumaş Tipi"]);
-  const color = attr(product, ["color", "colorName", "Renk", "Renk Adı"]);
-  const colorCode = attr(product, ["colorCode", "RenkKodu", "Renk Kodu"]);
+  const color = attr(product, ["color", "colorName", "Renk", "Renk Adı"]) || normalize(product.rolls?.[0]?.colorName || product.rolls?.[0]?.color || "");
+  const colorCode = attr(product, ["colorCode", "RenkKodu", "Renk Kodu"]) || normalize(product.rolls?.[0]?.colorCode || "");
   const width = attr(product, ["width", "En", "Kumaş Eni"]);
   const pattern = attr(product, ["pattern", "Desen", "Desen / Baskı"]);
   // Legacy fabric tops are physical stock lots of the same sellable variety.
@@ -154,20 +154,21 @@ export function getGroupedAvailableRolls(product: Product): number {
 // Inventory-only hierarchy: product family -> color variants -> physical tops.
 // Sales continues using groupFabricProducts() so each color remains independently sellable.
 export function groupFabricProductsByParent(products: Product[]): Product[] {
-  const colorProducts = groupProducts(products);
+  // Ignore productFamilyId for textile records here: colors must remain separate children
+  // even when older/manual records share a family identifier.
+  const colorProducts = groupProducts(products.filter(isFabricRecord).map((product) => ({
+    ...product,
+    productFamilyId: undefined
+  })));
   const parentGroups = new Map<string, Product[]>();
-  const untouched: Product[] = [];
+  const untouched: Product[] = groupProducts(products.filter((product) => !isFabricRecord(product)));
 
   for (const product of colorProducts) {
-    if (!isFabricRecord(product)) {
-      untouched.push(product);
-      continue;
-    }
-
     const metadata = (product.metadata || {}) as Record<string, unknown>;
     const attributes = product.attributes || {};
-    const colorCode = String(metadata.colorCode ?? attributes.colorCode ?? attributes.RenkKodu ?? attributes["Renk Kodu"] ?? "").trim();
-    const colorName = String(metadata.colorName ?? metadata.color ?? attributes.colorName ?? attributes.Renk ?? attributes["Renk Adı"] ?? "").trim();
+    const firstRoll = product.rolls?.[0];
+    const colorCode = String(metadata.colorCode ?? attributes.colorCode ?? attributes.RenkKodu ?? attributes["Renk Kodu"] ?? firstRoll?.colorCode ?? "").trim();
+    const colorName = String(metadata.colorName ?? metadata.color ?? attributes.colorName ?? attributes.Renk ?? attributes["Renk Adı"] ?? firstRoll?.colorName ?? firstRoll?.color ?? "").trim();
     const label = [colorCode, colorName].filter(Boolean).join(" · ") || product.variantLabel || "Renk belirtilmemiş";
     const key = JSON.stringify([
       baseFabricName(product.name),
