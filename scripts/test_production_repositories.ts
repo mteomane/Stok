@@ -30,6 +30,7 @@ import { FirebaseSalesRepository } from "../src/lib/repositories/firebase/Fireba
 import { FirebaseOrderRepository } from "../src/lib/repositories/firebase/FirebaseOrderRepository";
 import { FirebaseCustomerRepository } from "../src/lib/repositories/firebase/FirebaseCustomerRepository";
 import { FirebaseSupplierRepository } from "../src/lib/repositories/firebase/FirebaseSupplierRepository";
+import { DataImportService } from "../src/lib/export/ImportService";
 import { setTestAuthenticatedUid } from "../src/lib/authGuard";
 import { memoryCache } from "../src/lib/cache";
 import { roundQty, round2 } from "../src/lib/repositories/firebase/helpers";
@@ -620,6 +621,42 @@ export async function runProductionRepositoryTests() {
         colorHierarchy[0].colorGroups?.length === 2 && colorHierarchy[0].stock === 90.6 &&
         colorOne?.rolls?.length === 2 && colorTwo?.rolls?.length === 1),
       "Aynı ürün tek ana satırda, C1 ve C2 ayrı renk dallarında ve toplar kendi renklerinin altında görünür"
+    );
+
+    const importServiceForColorTest = new DataImportService();
+    const textileHeaders = ["Ürün Adı", "Renk Kodu", "Renk", "Metre", "Adet"];
+    const textileMapping = [
+      { excelColumn: "Ürün Adı", targetField: "name" },
+      { excelColumn: "Renk Kodu", targetField: "colorCode" },
+      { excelColumn: "Renk", targetField: "colorName" },
+      { excelColumn: "Metre", targetField: "metre" },
+      { excelColumn: "Adet", targetField: "adet" }
+    ];
+    const textilePreview = importServiceForColorTest.previewUniversalImport(
+      [
+        ["DANTEL-D-60338", "C1", "OF WHITE", "31,00", "1"],
+        ["DANTEL-D-60338", "C1", "OF WHITE", "32,30", "1"],
+        ["DANTEL-D-60338", "C2", "SKIN", "27,30", "1"]
+      ],
+      textileHeaders,
+      textileMapping,
+      "products",
+      []
+    );
+    const c1Preview = textilePreview.previewRows[0]?._parsed;
+    const c2Preview = textilePreview.previewRows[2]?._parsed;
+    const colorDuplicatePreview = importServiceForColorTest.previewUniversalImport(
+      [["DANTEL-D-60338", "C2", "SKIN", "27,30", "1"]],
+      textileHeaders,
+      textileMapping,
+      "products",
+      [{ id: "existing_c1", name: "DANTEL-D-60338", metadata: { colorCode: "C1", colorName: "OF WHITE" }, attributes: { colorCode: "C1", color: "OF WHITE" } }]
+    );
+    recordResult(
+      Boolean(c1Preview?.rolls?.length === 2 && c1Preview.stock === 63.3 &&
+        c2Preview?.rolls?.length === 1 && c2Preview.stock === 27.3 &&
+        colorDuplicatePreview.previewRows[0]?._isDuplicate === false),
+      "Excel önizlemesi C1 ve C2 renklerini ayrı toplar; farklı renk mevcut ürün adıyla mükerrer sayılmaz"
     );
 
     const groupedReservationId = "cart_usr_repo_owner_a_grouped_001";
