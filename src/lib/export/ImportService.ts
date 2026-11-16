@@ -12,6 +12,21 @@ import { logAuditEvent, roundQty } from "../firestoreService";
 import { Product, Customer, Supplier, SectorField } from "../../types";
 import { triggerFileDownload } from "./fileDownload";
 
+// A textile variety is identified by product name AND its color code/name.
+// The same fabric in C1 and C2 must remain two separate child variants.
+function textileColorKey(value: any): string {
+  return String(value ?? "").normalize("NFKC").toLocaleLowerCase("tr-TR").replace(/\\s+/g, " ").trim();
+}
+
+function textileVariantKey(product: any): string {
+  const name = textileColorKey(product?.name);
+  const metadata = product?.metadata || {};
+  const attributes = product?.attributes || {};
+  const colorCode = textileColorKey(metadata.colorCode ?? attributes.colorCode ?? attributes.RenkKodu ?? attributes["Renk Kodu"]);
+  const colorName = textileColorKey(metadata.colorName ?? metadata.color ?? attributes.colorName ?? attributes.Renk ?? attributes["Renk Adı"]);
+  return JSON.stringify([name, colorCode, colorName]);
+}
+
 export class DataImportService implements IDataImportService {
   /**
    * Universal file parser: detects XLSX or CSV and returns raw headers and rows.
@@ -700,8 +715,13 @@ export class DataImportService implements IDataImportService {
 
       // Match by Name for textile products
       if (isTextileFile && !isDuplicate) {
+        const incomingVariantKey = textileVariantKey({
+          name,
+          metadata: { colorCode, colorName, color: colorName },
+          attributes: { colorCode, colorName, color: colorName }
+        });
         const matchedByName = existingItems.find(
-          it => (it.name || "").toLowerCase().trim() === name.toLowerCase().trim()
+          it => textileVariantKey(it) === incomingVariantKey
         );
         if (matchedByName) {
           isDuplicate = true;
@@ -728,6 +748,10 @@ export class DataImportService implements IDataImportService {
         },
         isActive: true
       };
+      if (isTextileFile) {
+        const colorLabel = [colorCode, colorName].filter(Boolean).join(" · ");
+        if (colorLabel) parsedProduct.variantLabel = colorLabel;
+      }
       if (isTextileFile && rowRolls.length > 0) {
         parsedProduct.rolls = rowRolls;
       }
@@ -764,7 +788,7 @@ export class DataImportService implements IDataImportService {
       const productRollsMap = new Map<string, any[]>();
       previewRows.forEach((r) => {
         if (!r._hasError && r._parsed?.rolls) {
-          const key = (r._parsed.name || "").toLowerCase().trim();
+          const key = textileVariantKey(r._parsed);
           if (!productRollsMap.has(key)) {
             productRollsMap.set(key, []);
           }
@@ -781,7 +805,7 @@ export class DataImportService implements IDataImportService {
 
       previewRows.forEach((r) => {
         if (!r._hasError && r._parsed) {
-          const key = (r._parsed.name || "").toLowerCase().trim();
+          const key = textileVariantKey(r._parsed);
           const consolidatedRolls = productRollsMap.get(key);
           if (consolidatedRolls) {
             r._parsed.rolls = consolidatedRolls;
@@ -870,7 +894,7 @@ export class DataImportService implements IDataImportService {
 
     toInsertPayloads.forEach((payload) => {
       if (payload.rolls && payload.rolls.length > 0) {
-        const key = (payload.name || "").toLowerCase().trim();
+        const key = textileVariantKey(payload);
         if (textileProductMap.has(key)) {
           const existing = textileProductMap.get(key)!;
           const merged = [...(existing.rolls || [])];
