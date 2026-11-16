@@ -202,6 +202,8 @@ export interface Product {
   groupProductIds?: string[];
   /** Source products represented by this grouped textile product (presentation only). */
   groupMembers?: Product[];
+  /** Color-level children shown only in the inventory hierarchy; never persisted. */
+  colorGroups?: Product[];
   minStock: number;
   description?: string; // Ürün Açıklaması
   warehouseId?: string; // İlgili depo referansı
