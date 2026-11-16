@@ -622,7 +622,7 @@ export async function runProductionRepositoryTests() {
       Boolean(colorHierarchy.length === 1 && colorHierarchy[0].name === "DANTEL-D-60338" &&
         colorHierarchy[0].colorGroups?.length === 3 && colorHierarchy[0].stock === 104.6 &&
         colorOne?.rolls?.length === 2 && colorTwo?.rolls?.length === 1 &&
-        colorThree?.rolls?.length === 1 && colorThree.rolls[0].length === 14),
+        colorThree?.rolls?.length === 1 && Number(colorThree?.rolls?.[0]?.length) === 14),
       "Aynı ürün tek ana satırda, renkler ayrı dallarda görünür; elle eklenen metraj da Top #1 olarak temsil edilir"
     );
 
