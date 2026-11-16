@@ -187,9 +187,13 @@ export function groupFabricProductsByParent(products: Product[]): Product[] {
 
   const parents: Product[] = [];
   for (const variantsUnsorted of parentGroups.values()) {
-    const colorGroups = [...variantsUnsorted].sort((a, b) =>
-      String(a.variantLabel || "").localeCompare(String(b.variantLabel || ""), "tr")
-    );
+    const colorGroups = variantsUnsorted
+      .map((variant) => {
+        if (variant.rolls?.length || Number(variant.stock || 0) <= 0) return variant;
+        const source = variant.groupMembers?.[0] || variant;
+        return { ...variant, rolls: [makeSyntheticRoll(source, 0)] };
+      })
+      .sort((a, b) => String(a.variantLabel || "").localeCompare(String(b.variantLabel || ""), "tr"));
     const representative = colorGroups[0];
     const sourceProducts = colorGroups.flatMap((variant) =>
       variant.groupMembers?.length ? variant.groupMembers : [variant]
