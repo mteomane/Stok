@@ -156,10 +156,51 @@ export function getGroupedAvailableRolls(product: Product): number {
 export function groupFabricProductsByParent(products: Product[]): Product[] {
   // Ignore productFamilyId for textile records here: colors must remain separate children
   // even when older/manual records share a family identifier.
-  const colorProducts = groupProducts(products.filter(isFabricRecord).map((product) => ({
-    ...product,
-    productFamilyId: undefined
-  })));
+  const rawFabricProducts = products.filter(isFabricRecord);
+  const expandedFabricProducts = rawFabricProducts.flatMap((product) => {
+    const metadata = (product.metadata || {}) as Record<string, unknown>;
+    const attributes = product.attributes || {};
+    const byColor = new Map<string, FabricRoll[]>();
+    (product.rolls || []).forEach((roll) => {
+      const code = normalize(roll.colorCode || metadata.colorCode || attributes.colorCode || attributes.RenkKodu || "");
+      const name = normalize(roll.colorName || roll.color || metadata.colorName || metadata.color || attributes.colorName || attributes.Renk || "");
+      const key = code ? "code:" + code : name ? "name:" + name : "default";
+      const list = byColor.get(key) || [];
+      list.push(roll);
+      byColor.set(key, list);
+    });
+
+    if (byColor.size <= 1) return [{ ...product, productFamilyId: undefined }];
+
+    return Array.from(byColor.entries()).map(([key, rolls]) => {
+      const colorCode = String(rolls[0]?.colorCode || metadata.colorCode || attributes.colorCode || attributes.RenkKodu || "");
+      const colorName = String(rolls[0]?.colorName || rolls[0]?.color || metadata.colorName || metadata.color || attributes.colorName || attributes.Renk || "");
+      const stock = Number(rolls.reduce((sum, roll) => sum + Number(roll.length || 0), 0).toFixed(3));
+      const reservedStock = Number(rolls.reduce((sum, roll) => sum + Number(roll.reservedLength || 0), 0).toFixed(3));
+      const scopedRolls = rolls.map((roll) => ({ ...roll, productId: product.id }));
+      const scopedProduct: Product = {
+        ...product,
+        productFamilyId: undefined,
+        variantLabel: [colorCode, colorName].filter(Boolean).join(" · ") || key,
+        stock,
+        reservedStock,
+        rolls: scopedRolls,
+        metadata: { ...metadata, colorCode, colorName, color: colorName },
+        attributes: { ...attributes, colorCode, colorName, color: colorName },
+        groupProductIds: [product.id],
+        groupMembers: [{
+          ...product,
+          stock,
+          reservedStock,
+          rolls: scopedRolls,
+          metadata: { ...metadata, colorCode, colorName, color: colorName },
+          attributes: { ...attributes, colorCode, colorName, color: colorName }
+        }]
+      };
+      return scopedProduct;
+    });
+  });
+  const colorProducts = groupProducts(expandedFabricProducts);
   const parentGroups = new Map<string, Product[]>();
   const untouched: Product[] = groupProducts(products.filter((product) => !isFabricRecord(product)));
 
@@ -195,9 +236,14 @@ export function groupFabricProductsByParent(products: Product[]): Product[] {
       })
       .sort((a, b) => String(a.variantLabel || "").localeCompare(String(b.variantLabel || ""), "tr"));
     const representative = colorGroups[0];
-    const sourceProducts = colorGroups.flatMap((variant) =>
-      variant.groupMembers?.length ? variant.groupMembers : [variant]
-    );
+    const sourceIds = Array.from(new Set(colorGroups.flatMap((variant) =>
+      variant.groupProductIds?.length
+        ? variant.groupProductIds
+        : variant.groupMembers?.length
+          ? variant.groupMembers.map((member) => member.id)
+          : [variant.id]
+    )));
+    const sourceProducts = products.filter((product) => sourceIds.includes(product.id));
     const rolls = colorGroups.flatMap((variant) => variant.rolls || []);
     const stock = Number(sourceProducts.reduce((sum, member) => sum + Number(member.stock || 0), 0).toFixed(3));
     const reservedStock = Number(sourceProducts.reduce((sum, member) => sum + Number(member.reservedStock || 0), 0).toFixed(3));
@@ -208,7 +254,7 @@ export function groupFabricProductsByParent(products: Product[]): Product[] {
       stock,
       reservedStock,
       rolls,
-      groupProductIds: sourceProducts.map((member) => member.id),
+      groupProductIds: sourceIds,
       groupMembers: sourceProducts,
       colorGroups
     });
