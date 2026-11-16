@@ -230,9 +230,17 @@ export function groupFabricProductsByParent(products: Product[]): Product[] {
   for (const variantsUnsorted of parentGroups.values()) {
     const colorGroups = variantsUnsorted
       .map((variant) => {
-        if (variant.rolls?.length || Number(variant.stock || 0) <= 0) return variant;
         const source = variant.groupMembers?.[0] || variant;
-        return { ...variant, rolls: [makeSyntheticRoll(source, 0)] };
+        const rolls = variant.rolls?.length
+          ? variant.rolls
+          : Number(variant.stock || 0) > 0
+            ? [makeSyntheticRoll(source, 0)]
+            : [];
+        const fallbackProductId = variant.groupProductIds?.[0] || source.id || variant.id;
+        return {
+          ...variant,
+          rolls: rolls.map((roll) => ({ ...roll, productId: roll.productId || fallbackProductId }))
+        };
       })
       .sort((a, b) => String(a.variantLabel || "").localeCompare(String(b.variantLabel || ""), "tr"));
     const representative = colorGroups[0];
