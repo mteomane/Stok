@@ -611,16 +611,19 @@ export async function runProductionRepositoryTests() {
     const colorHierarchyProducts: Product[] = [
       { id: "color_c1_top_1", name: "DANTEL-D-60338", sku: "DANTEL-C1-1", category: "Kumaş / Tekstil", unit: "Metre", price: 100, stock: 31, minStock: 0, metadata: { colorCode: "C1", colorName: "OF WHITE" }, rolls: [{ id: "c1r1", rollNumber: "Top 1", length: 31, initialLength: 31, status: "available" }] },
       { id: "color_c1_top_2", name: "DANTEL-D-60338", sku: "DANTEL-C1-2", category: "Kumaş / Tekstil", unit: "Metre", price: 100, stock: 32.3, minStock: 0, metadata: { colorCode: "C1", colorName: "OF WHITE" }, rolls: [{ id: "c1r2", rollNumber: "Top 2", length: 32.3, initialLength: 32.3, status: "available" }] },
-      { id: "color_c2_top_1", name: "DANTEL-D-60338", sku: "DANTEL-C2-1", category: "Kumaş / Tekstil", unit: "Metre", price: 100, stock: 27.3, minStock: 0, metadata: { colorCode: "C2", colorName: "SKIN" }, rolls: [{ id: "c2r1", rollNumber: "Top 1", length: 27.3, initialLength: 27.3, status: "available" }] }
+      { id: "color_c2_top_1", name: "DANTEL-D-60338", sku: "DANTEL-C2-1", category: "Kumaş / Tekstil", unit: "Metre", price: 100, stock: 27.3, minStock: 0, metadata: { colorCode: "C2", colorName: "SKIN" }, rolls: [{ id: "c2r1", rollNumber: "Top 1", length: 27.3, initialLength: 27.3, status: "available" }] },
+      { id: "color_c3_manual", name: "DANTEL-D-60338", sku: "DANTEL-C3", category: "Kumaş / Tekstil", unit: "Metre", price: 100, stock: 14, minStock: 0, metadata: { colorCode: "C3", colorName: "BLACK" } }
     ];
     const colorHierarchy = groupFabricProductsByParent(colorHierarchyProducts);
     const colorOne = colorHierarchy[0]?.colorGroups?.find((group) => group.variantLabel?.includes("C1"));
     const colorTwo = colorHierarchy[0]?.colorGroups?.find((group) => group.variantLabel?.includes("C2"));
+    const colorThree = colorHierarchy[0]?.colorGroups?.find((group) => group.variantLabel?.includes("C3"));
     recordResult(
       Boolean(colorHierarchy.length === 1 && colorHierarchy[0].name === "DANTEL-D-60338" &&
-        colorHierarchy[0].colorGroups?.length === 2 && colorHierarchy[0].stock === 90.6 &&
-        colorOne?.rolls?.length === 2 && colorTwo?.rolls?.length === 1),
-      "Aynı ürün tek ana satırda, C1 ve C2 ayrı renk dallarında ve toplar kendi renklerinin altında görünür"
+        colorHierarchy[0].colorGroups?.length === 3 && colorHierarchy[0].stock === 104.6 &&
+        colorOne?.rolls?.length === 2 && colorTwo?.rolls?.length === 1 &&
+        colorThree?.rolls?.length === 1 && colorThree.rolls[0].length === 14),
+      "Aynı ürün tek ana satırda, renkler ayrı dallarda görünür; elle eklenen metraj da Top #1 olarak temsil edilir"
     );
 
     const importServiceForColorTest = new DataImportService();
