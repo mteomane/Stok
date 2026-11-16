@@ -41,8 +41,8 @@ function groupKey(product: Product): string {
   const brand = normalize(product.brand || product.metadata?.brand || "");
   const unit = normalize(product.unit || "metre");
   const fabricType = attr(product, ["fabricType", "Kumaş Tipi"]);
-  const color = attr(product, ["color", "colorName", "Renk", "Renk Adı"]) || normalize(product.rolls?.[0]?.colorName || product.rolls?.[0]?.color || "");
   const colorCode = attr(product, ["colorCode", "RenkKodu", "Renk Kodu"]) || normalize(product.rolls?.[0]?.colorCode || "");
+  const color = colorCode ? "" : (attr(product, ["color", "colorName", "Renk", "Renk Adı"]) || normalize(product.rolls?.[0]?.colorName || product.rolls?.[0]?.color || ""));
   const width = attr(product, ["width", "En", "Kumaş Eni"]);
   const pattern = attr(product, ["pattern", "Desen", "Desen / Baskı"]);
   // Legacy fabric tops are physical stock lots of the same sellable variety.
