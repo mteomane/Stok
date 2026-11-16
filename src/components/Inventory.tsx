@@ -784,7 +784,7 @@ export function Inventory({
     const selectedFamilies = displayProducts.filter((product) =>
       getSourceProductIds(product).every((id) => selectedProductIds.has(id))
     ).length;
-    if (!confirm(`${selectedFamilies} ürünün toplam ${count} stok kaydını silmek istediğinize emin misiniz? Bu işlem geri alınamaz.`)) return;
+    if (!confirm(`${selectedFamilies} ürünün toplam ${count} stok kaydı arşive alınacak. Arşivden geri yükleyebilirsiniz. Devam edilsin mi?`)) return;
     try {
       for (const product of products.filter((item) => selectedProductIds.has(item.id))) {
         await onDeleteProduct(product.id);
@@ -792,7 +792,7 @@ export function Inventory({
       setSelectedProductIds(new Set());
       if (onRefreshData) await onRefreshData();
     } catch (err: any) {
-      alert(err?.message || "Seçilen ürünler silinirken hata oluştu. Silinen kayıtlar korunmayabilir; listeyi yenileyip kontrol edin.");
+      alert(err?.message || "Seçilen ürünler arşivlenirken hata oluştu. Bazı kayıtlar arşivlenmiş olabilir; listeyi yenileyip kontrol edin.");
       if (onRefreshData) await onRefreshData();
     }
   };
