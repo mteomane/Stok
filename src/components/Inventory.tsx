@@ -434,7 +434,7 @@ export function Inventory({
             attributes: { ...(source.attributes || {}), "Rulo No": editingRollNumber.trim() || targetRoll.rollNumber }
           });
         } else {
-          const originalRollId = String(targetRoll.id).slice((source.id + "::").length);
+          const originalRollId = String(targetRoll.id).startsWith(source.id + "::") ? String(targetRoll.id).slice((source.id + "::").length) : String(targetRoll.id);
           const sourceRolls = source.rolls || [];
           const nextSourceRolls = sourceRolls.map((roll) => roll.id === originalRollId ? {
             ...roll,
