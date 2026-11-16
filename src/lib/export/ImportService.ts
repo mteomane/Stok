@@ -25,7 +25,7 @@ function textileVariantKey(product: any): string {
   const firstRoll = product?.rolls?.[0];
   const colorCode = textileColorKey(metadata.colorCode ?? attributes.colorCode ?? attributes.RenkKodu ?? attributes["Renk Kodu"] ?? firstRoll?.colorCode);
   const colorName = textileColorKey(metadata.colorName ?? metadata.color ?? attributes.colorName ?? attributes.Renk ?? attributes["Renk Adı"] ?? firstRoll?.colorName ?? firstRoll?.color);
-  return JSON.stringify([name, colorCode, colorName]);
+  return JSON.stringify([name, colorCode || colorName]);
 }
 
 export class DataImportService implements IDataImportService {
