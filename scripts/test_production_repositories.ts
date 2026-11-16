@@ -626,6 +626,29 @@ export async function runProductionRepositoryTests() {
       "Aynı ürün tek ana satırda, renkler ayrı dallarda görünür; elle eklenen metraj da Top #1 olarak temsil edilir"
     );
 
+    const mixedColorLegacyProduct: Product = {
+      id: "legacy_mixed_colors",
+      name: "DANTEL-D-60338",
+      sku: "DANTEL-LEGACY",
+      category: "Kumaş / Tekstil",
+      unit: "Metre",
+      price: 100,
+      stock: 58.3,
+      minStock: 0,
+      rolls: [
+        { id: "legacy_c1", rollNumber: "Top 1", colorCode: "C1", colorName: "OF WHITE", length: 31, initialLength: 31, status: "available" },
+        { id: "legacy_c2", rollNumber: "Top 2", colorCode: "C2", colorName: "SKIN", length: 27.3, initialLength: 27.3, status: "available" }
+      ]
+    };
+    const mixedColorHierarchy = groupFabricProductsByParent([mixedColorLegacyProduct]);
+    recordResult(
+      Boolean(mixedColorHierarchy.length === 1 && mixedColorHierarchy[0].colorGroups?.length === 2 &&
+        mixedColorHierarchy[0].colorGroups?.find((group) => group.variantLabel?.includes("C1"))?.stock === 31 &&
+        mixedColorHierarchy[0].colorGroups?.find((group) => group.variantLabel?.includes("C2"))?.stock === 27.3 &&
+        mixedColorHierarchy[0].groupProductIds?.length === 1),
+      "Eski tek ürün kaydında karışmış C1/C2 topları canlı veriyi değiştirmeden ekranda ayrı renk dallarına ayrılır"
+    );
+
     const importServiceForColorTest = new DataImportService();
     const textileHeaders = ["Ürün Adı", "Renk Kodu", "Renk", "Metre", "Adet"];
     const textileMapping = [
