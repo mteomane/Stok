@@ -724,8 +724,11 @@ export class DataImportService implements IDataImportService {
           metadata: { colorCode, colorName, color: colorName },
           attributes: { colorCode, colorName, color: colorName }
         });
-        const matchedByName = existingItems.find(
-          it => textileVariantKey(it) === incomingVariantKey
+        const matchedByName = existingItems.find((it) =>
+          textileVariantKey(it) === incomingVariantKey ||
+          (it.rolls || []).some((roll: any) =>
+            textileVariantKey({ name: it.name, rolls: [roll] }) === incomingVariantKey
+          )
         );
         if (matchedByName) {
           isDuplicate = true;
