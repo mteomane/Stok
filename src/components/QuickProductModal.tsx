@@ -220,6 +220,29 @@ export function QuickProductModal({
         metadata: attributes,
         isPackaged
       };
+
+      // Manual textile creation starts with one real physical top, matching Excel imports.
+      const normalizedUnit = (unit || "").trim().toLocaleLowerCase("tr-TR");
+      const normalizedCategory = (category || "").trim().toLocaleLowerCase("tr-TR");
+      const isTextileStock = ["metre", "meter", "mt", "m", "top", "rulo"].includes(normalizedUnit) ||
+        ["kumaş", "kumas", "dokuma", "örme", "orme", "tekstil"].some((term) => normalizedCategory.includes(term));
+      if (isTextileStock && parsedStock > 0) {
+        const colorCode = String(attributes.colorCode || attributes.RenkKodu || attributes["Renk Kodu"] || "").trim();
+        const colorName = String(attributes.colorName || attributes.color || attributes.Renk || attributes["Renk Adı"] || "").trim();
+        productPayload.rolls = [{
+          id: "R-" + Math.random().toString(36).substring(2, 8).toUpperCase(),
+          rollNumber: "Top #1",
+          length: roundQty(parsedStock),
+          initialLength: roundQty(parsedStock),
+          soldLength: 0,
+          colorCode: colorCode || undefined,
+          colorName: colorName || undefined,
+          color: colorName || undefined,
+          entryDate: new Date().toISOString().split("T")[0],
+          status: "available",
+          createdAt: new Date().toISOString()
+        }];
+      }
       if (barcode.trim()) {
         productPayload.barcode = barcode.trim();
       }

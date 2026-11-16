@@ -41,8 +41,8 @@ function groupKey(product: Product): string {
   const brand = normalize(product.brand || product.metadata?.brand || "");
   const unit = normalize(product.unit || "metre");
   const fabricType = attr(product, ["fabricType", "Kumaş Tipi"]);
-  const color = attr(product, ["color", "colorName", "Renk", "Renk Adı"]);
-  const colorCode = attr(product, ["colorCode", "RenkKodu", "Renk Kodu"]);
+  const colorCode = attr(product, ["colorCode", "RenkKodu", "Renk Kodu"]) || normalize(product.rolls?.[0]?.colorCode || "");
+  const color = colorCode ? "" : (attr(product, ["color", "colorName", "Renk", "Renk Adı"]) || normalize(product.rolls?.[0]?.colorName || product.rolls?.[0]?.color || ""));
   const width = attr(product, ["width", "En", "Kumaş Eni"]);
   const pattern = attr(product, ["pattern", "Desen", "Desen / Baskı"]);
   // Legacy fabric tops are physical stock lots of the same sellable variety.
@@ -148,4 +148,125 @@ export function getGroupedAvailableStock(product: Product): number {
 
 export function getGroupedAvailableRolls(product: Product): number {
   return Number((product.rolls || []).reduce((sum, roll) => sum + getAvailableRollLength(roll), 0).toFixed(3));
+}
+
+
+// Inventory-only hierarchy: product family -> color variants -> physical tops.
+// Sales continues using groupFabricProducts() so each color remains independently sellable.
+export function groupFabricProductsByParent(products: Product[]): Product[] {
+  // Ignore productFamilyId for textile records here: colors must remain separate children
+  // even when older/manual records share a family identifier.
+  const rawFabricProducts = products.filter(isFabricRecord);
+  const expandedFabricProducts = rawFabricProducts.flatMap((product) => {
+    const metadata = (product.metadata || {}) as Record<string, unknown>;
+    const attributes = product.attributes || {};
+    const byColor = new Map<string, FabricRoll[]>();
+    (product.rolls || []).forEach((roll) => {
+      const code = normalize(roll.colorCode || metadata.colorCode || attributes.colorCode || attributes.RenkKodu || "");
+      const name = normalize(roll.colorName || roll.color || metadata.colorName || metadata.color || attributes.colorName || attributes.Renk || "");
+      const key = code ? "code:" + code : name ? "name:" + name : "default";
+      const list = byColor.get(key) || [];
+      list.push(roll);
+      byColor.set(key, list);
+    });
+
+    if (byColor.size <= 1) return [{ ...product, productFamilyId: undefined }];
+
+    return Array.from(byColor.entries()).map(([key, rolls]) => {
+      const colorCode = String(rolls[0]?.colorCode || metadata.colorCode || attributes.colorCode || attributes.RenkKodu || "");
+      const colorName = String(rolls[0]?.colorName || rolls[0]?.color || metadata.colorName || metadata.color || attributes.colorName || attributes.Renk || "");
+      const stock = Number(rolls.reduce((sum, roll) => sum + Number(roll.length || 0), 0).toFixed(3));
+      const reservedStock = Number(rolls.reduce((sum, roll) => sum + Number(roll.reservedLength || 0), 0).toFixed(3));
+      const scopedRolls = rolls.map((roll) => ({ ...roll, productId: product.id }));
+      const scopedProduct: Product = {
+        ...product,
+        productFamilyId: undefined,
+        variantLabel: [colorCode, colorName].filter(Boolean).join(" · ") || key,
+        stock,
+        reservedStock,
+        rolls: scopedRolls,
+        metadata: { ...metadata, colorCode, colorName, color: colorName },
+        attributes: { ...attributes, colorCode, colorName, color: colorName },
+        groupProductIds: [product.id],
+        groupMembers: [{
+          ...product,
+          stock,
+          reservedStock,
+          rolls: scopedRolls,
+          metadata: { ...metadata, colorCode, colorName, color: colorName },
+          attributes: { ...attributes, colorCode, colorName, color: colorName }
+        }]
+      };
+      return scopedProduct;
+    });
+  });
+  const colorProducts = groupProducts(expandedFabricProducts);
+  const parentGroups = new Map<string, Product[]>();
+  const untouched: Product[] = groupProducts(products.filter((product) => !isFabricRecord(product)));
+
+  for (const product of colorProducts) {
+    const metadata = (product.metadata || {}) as Record<string, unknown>;
+    const attributes = product.attributes || {};
+    const firstRoll = product.rolls?.[0];
+    const colorCode = String(metadata.colorCode ?? attributes.colorCode ?? attributes.RenkKodu ?? attributes["Renk Kodu"] ?? firstRoll?.colorCode ?? "").trim();
+    const colorName = String(metadata.colorName ?? metadata.color ?? attributes.colorName ?? attributes.Renk ?? attributes["Renk Adı"] ?? firstRoll?.colorName ?? firstRoll?.color ?? "").trim();
+    const label = [colorCode, colorName].filter(Boolean).join(" · ") || product.variantLabel || "Renk belirtilmemiş";
+    const key = JSON.stringify([
+      baseFabricName(product.name),
+      normalize(product.category),
+      normalize(product.brand || product.metadata?.brand || ""),
+      normalize(product.unit || "metre"),
+      attr(product, ["fabricType", "Kumaş Tipi"]),
+      attr(product, ["width", "En", "Kumaş Eni"]),
+      attr(product, ["pattern", "Desen", "Desen / Baskı"]),
+      product.isActive === false ? "archived" : "active"
+    ]);
+    const list = parentGroups.get(key) || [];
+    list.push({ ...product, variantLabel: label });
+    parentGroups.set(key, list);
+  }
+
+  const parents: Product[] = [];
+  for (const variantsUnsorted of parentGroups.values()) {
+    const colorGroups = variantsUnsorted
+      .map((variant) => {
+        const source = variant.groupMembers?.[0] || variant;
+        const rolls = variant.rolls?.length
+          ? variant.rolls
+          : Number(variant.stock || 0) > 0
+            ? [makeSyntheticRoll(source, 0)]
+            : [];
+        const fallbackProductId = variant.groupProductIds?.[0] || source.id || variant.id;
+        return {
+          ...variant,
+          rolls: rolls.map((roll) => ({ ...roll, productId: roll.productId || fallbackProductId }))
+        };
+      })
+      .sort((a, b) => String(a.variantLabel || "").localeCompare(String(b.variantLabel || ""), "tr"));
+    const representative = colorGroups[0];
+    const sourceIds = Array.from(new Set(colorGroups.flatMap((variant) =>
+      variant.groupProductIds?.length
+        ? variant.groupProductIds
+        : variant.groupMembers?.length
+          ? variant.groupMembers.map((member) => member.id)
+          : [variant.id]
+    )));
+    const sourceProducts = products.filter((product) => sourceIds.includes(product.id));
+    const rolls = colorGroups.flatMap((variant) => variant.rolls || []);
+    const stock = Number(sourceProducts.reduce((sum, member) => sum + Number(member.stock || 0), 0).toFixed(3));
+    const reservedStock = Number(sourceProducts.reduce((sum, member) => sum + Number(member.reservedStock || 0), 0).toFixed(3));
+
+    parents.push({
+      ...representative,
+      name: displayFabricName(representative.name),
+      stock,
+      reservedStock,
+      rolls,
+      groupProductIds: sourceIds,
+      groupMembers: sourceProducts,
+      colorGroups
+    });
+  }
+
+  return [...untouched, ...parents].sort((a, b) => a.name.localeCompare(b.name, "tr"));
 }

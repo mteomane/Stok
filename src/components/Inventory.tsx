@@ -43,7 +43,7 @@ import { QuickProductModal } from "./QuickProductModal";
 import { QuickReplenishModal } from "./QuickReplenishModal";
 import { QRScanner } from "./QRScanner";
 import { getAvailableStock, getSectorProfile, shouldShowRolls, SECTOR_PROFILES } from "../lib/sectorConfig";
-import { groupFabricProducts, getGroupedAvailableStock } from "../lib/productGrouping";
+import { groupFabricProductsByParent, getGroupedAvailableStock } from "../lib/productGrouping";
 import { exportService } from "../lib/export/ExportService";
 import { triggerFileDownload } from "../lib/export/fileDownload";
 
@@ -84,6 +84,7 @@ export function Inventory({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(24);
   const [isExporting, setIsExporting] = useState(false);
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
 
   // Quick product & Barcode modals
   const [showQuickAddModal, setShowQuickAddModal] = useState(false);
@@ -249,7 +250,7 @@ export function Inventory({
 
   useEffect(() => {
     if (!selectedRollProduct) return;
-    const latest = groupFabricProducts(products).find((product) => product.id === selectedRollProduct.id);
+    const latest = groupFabricProductsByParent(products).find((product) => product.id === selectedRollProduct.id || product.groupProductIds?.includes(selectedRollProduct.id));
     if (latest && latest !== selectedRollProduct) setSelectedRollProduct(latest);
   }, [products, selectedRollProduct?.id]);
   const [newRollNumber, setNewRollNumber] = useState("");
@@ -301,7 +302,15 @@ export function Inventory({
     const rollNum = newRollNumber.trim() || ("Top #" + (currentRolls.length + 1));
 
     if (selectedRollProduct.groupProductIds && selectedRollProduct.groupMembers?.length) {
-      const source = selectedRollProduct.groupMembers[0];
+      const targetColorGroup = selectedRollProduct.colorGroups?.find((group) => {
+        const metadata = group.metadata || {};
+        const attributes = group.attributes || {};
+        const code = String(metadata.colorCode || attributes.colorCode || attributes.RenkKodu || "").trim().toLocaleLowerCase("tr-TR");
+        const color = String(metadata.colorName || metadata.color || attributes.colorName || attributes.Renk || "").trim().toLocaleLowerCase("tr-TR");
+        return (newRollColorCode.trim() && code === newRollColorCode.trim().toLocaleLowerCase("tr-TR")) ||
+          (newRollColorName.trim() && color === newRollColorName.trim().toLocaleLowerCase("tr-TR"));
+      }) || selectedRollProduct.colorGroups?.[0] || selectedRollProduct;
+      const source = targetColorGroup.groupMembers?.[0] || targetColorGroup;
       const newRoll: FabricRoll = {
         id: "R-" + Math.random().toString(36).substring(2, 8).toUpperCase(),
         rollNumber: rollNum,
@@ -425,7 +434,7 @@ export function Inventory({
             attributes: { ...(source.attributes || {}), "Rulo No": editingRollNumber.trim() || targetRoll.rollNumber }
           });
         } else {
-          const originalRollId = String(targetRoll.id).slice((source.id + "::").length);
+          const originalRollId = String(targetRoll.id).startsWith(source.id + "::") ? String(targetRoll.id).slice((source.id + "::").length) : String(targetRoll.id);
           const sourceRolls = source.rolls || [];
           const nextSourceRolls = sourceRolls.map((roll) => roll.id === originalRollId ? {
             ...roll,
@@ -558,7 +567,7 @@ export function Inventory({
     return getSectorProfile(key).name;
   };
 
-  const displayProducts = useMemo(() => groupFabricProducts(products), [products]);
+  const displayProducts = useMemo(() => groupFabricProductsByParent(products), [products]);
 
   // Memoized categories extraction
   const categories = useMemo(() => ["Tümü", ...Array.from(new Set(displayProducts.map((p) => p.category || "Genel")))], [displayProducts]);
@@ -758,6 +767,36 @@ export function Inventory({
     }
   };
 
+  const getSourceProductIds = (product: Product): string[] =>
+    product.groupProductIds?.length ? product.groupProductIds : [product.id];
+
+  const toggleProductSelection = (product: Product, checked: boolean) => {
+    setSelectedProductIds((current) => {
+      const next = new Set(current);
+      getSourceProductIds(product).forEach((id) => checked ? next.add(id) : next.delete(id));
+      return next;
+    });
+  };
+
+  const handleBulkDeleteSelected = async () => {
+    if (selectedProductIds.size === 0) return;
+    const count = selectedProductIds.size;
+    const selectedFamilies = displayProducts.filter((product) =>
+      getSourceProductIds(product).every((id) => selectedProductIds.has(id))
+    ).length;
+    if (!confirm(`${selectedFamilies} ürünün toplam ${count} stok kaydı arşive alınacak. Arşivden geri yükleyebilirsiniz. Devam edilsin mi?`)) return;
+    try {
+      for (const product of products.filter((item) => selectedProductIds.has(item.id))) {
+        await onDeleteProduct(product.id);
+      }
+      setSelectedProductIds(new Set());
+      if (onRefreshData) await onRefreshData();
+    } catch (err: any) {
+      alert(err?.message || "Seçilen ürünler arşivlenirken hata oluştu. Bazı kayıtlar arşivlenmiş olabilir; listeyi yenileyip kontrol edin.");
+      if (onRefreshData) await onRefreshData();
+    }
+  };
+
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(val);
   };
@@ -771,6 +810,15 @@ export function Inventory({
           <p className="text-xs text-slate-400">Ürünlerinizi ekleyin, güncelleyin, paket içi kısmi birimleri çıkarın ve QR kod üretin.</p>
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap sm:flex-nowrap">
+          {selectedProductIds.size > 0 && (
+            <button
+              type="button"
+              onClick={handleBulkDeleteSelected}
+              className="flex-1 sm:flex-none px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Trash2 className="w-4 h-4" /> Seçilenleri Sil ({displayProducts.filter((product) => getSourceProductIds(product).every((id) => selectedProductIds.has(id))).length} ürün)
+            </button>
+          )}
           {/* Toplu QR & Etiket Yazdır Button */}
           <button
             onClick={() => {
@@ -1014,6 +1062,14 @@ export function Inventory({
                   {/* Name & SKU / Badges */}
                   <div className="col-span-5 min-w-0 pr-2">
                     <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={getSourceProductIds(p).every((id) => selectedProductIds.has(id))}
+                        onChange={(e) => toggleProductSelection(p, e.target.checked)}
+                        onClick={(e) => e.stopPropagation()}
+                        aria-label={`Seç: ${p.name}`}
+                        className="h-4 w-4 accent-rose-600 cursor-pointer flex-shrink-0"
+                      />
                       <span className="font-bold text-slate-800 text-sm truncate hover:text-indigo-600 transition-colors">
                         {p.name}
                       </span>
@@ -1134,6 +1190,14 @@ export function Inventory({
                   {/* Line 1: Title & Price */}
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                      <input
+                        type="checkbox"
+                        checked={getSourceProductIds(p).every((id) => selectedProductIds.has(id))}
+                        onChange={(e) => toggleProductSelection(p, e.target.checked)}
+                        onClick={(e) => e.stopPropagation()}
+                        aria-label={`Seç: ${p.name}`}
+                        className="h-4 w-4 accent-rose-600 cursor-pointer flex-shrink-0"
+                      />
                       <span className="font-bold text-slate-900 text-sm truncate">
                         {p.name}
                       </span>
@@ -1188,7 +1252,42 @@ export function Inventory({
                     onClick={(e) => e.stopPropagation()}
                   >
                     {/* Universal product variants stay hidden until the parent row is expanded. */}
-                    {p.groupMembers && p.groupMembers.length > 1 && (
+                    {p.colorGroups && p.colorGroups.length > 0 && (
+                      <div className="rounded-xl border border-indigo-100 bg-white overflow-hidden">
+                        <div className="px-3 py-2 bg-indigo-50/70 border-b border-indigo-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-700">Ürün renkleri ve toplar</span>
+                          <span className="text-[10px] text-indigo-600 font-semibold">{p.colorGroups.length} renk · toplam {getGroupedAvailableStock(p)} {p.unit || "Metre"}</span>
+                        </div>
+                        <div className="divide-y divide-slate-100">
+                          {p.colorGroups.map((member) => (
+                            <div key={member.id} className="px-3 py-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-xs font-bold text-slate-800 truncate">{member.variantLabel || member.name}</div>
+                                  <div className="text-[10px] text-slate-400 font-mono mt-0.5">{member.sku || "SKU yok"}</div>
+                                </div>
+                                <div className="text-right shrink-0">
+                                  <div className="text-xs font-bold text-slate-800">{getGroupedAvailableStock(member).toLocaleString("tr-TR")} {member.unit || p.unit || "m"}</div>
+                                </div>
+                              </div>
+                              <div className="mt-2 ml-2 border-l-2 border-indigo-100 pl-3 space-y-1.5">
+                                {(member.rolls || []).map((roll) => (
+                                  <div key={roll.id} className="flex items-center justify-between gap-2 text-[11px]">
+                                    <span className="text-slate-600">{roll.rollNumber}</span>
+                                    <span className="font-semibold text-slate-800">{Number(roll.length || 0).toLocaleString("tr-TR")} m</span>
+                                  </div>
+                                ))}
+                                {(!member.rolls || member.rolls.length === 0) && (
+                                  <span className="text-[10px] text-slate-400">Henüz top kaydı yok</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {!p.colorGroups?.length && p.groupMembers && p.groupMembers.length > 1 && (
                       <div className="rounded-xl border border-indigo-100 bg-white overflow-hidden">
                         <div className="px-3 py-2 bg-indigo-50/70 border-b border-indigo-100 flex items-center justify-between">
                           <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-700">Alt kırılımlar</span>
