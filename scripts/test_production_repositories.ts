@@ -679,11 +679,27 @@ export async function runProductionRepositoryTests() {
       "products",
       [{ id: "existing_c1", name: "DANTEL-D-60338", metadata: { colorCode: "C1", colorName: "OF WHITE" }, attributes: { colorCode: "C1", color: "OF WHITE" } }]
     );
+    const legacyMixedDuplicatePreview = importServiceForColorTest.previewUniversalImport(
+      [["DANTEL-D-60338", "C2", "SKIN", "27,30", "1"]],
+      textileHeaders,
+      textileMapping,
+      "products",
+      [{
+        id: "existing_mixed",
+        name: "DANTEL-D-60338",
+        metadata: { colorCode: "C1", colorName: "OF WHITE" },
+        rolls: [
+          { id: "old_c1", colorCode: "C1", colorName: "OF WHITE", length: 31 },
+          { id: "old_c2", colorCode: "C2", colorName: "SKIN", length: 27.3 }
+        ]
+      }]
+    );
     recordResult(
       Boolean(c1Preview?.rolls?.length === 2 && c1Preview.stock === 63.3 &&
         c2Preview?.rolls?.length === 1 && c2Preview.stock === 27.3 &&
-        colorDuplicatePreview.previewRows[0]?._isDuplicate === false),
-      "Excel önizlemesi C1 ve C2 renklerini ayrı toplar; farklı renk mevcut ürün adıyla mükerrer sayılmaz"
+        colorDuplicatePreview.previewRows[0]?._isDuplicate === false &&
+        legacyMixedDuplicatePreview.previewRows[0]?._isDuplicate === true),
+      "Excel önizlemesi C1/C2 renklerini ayrı toplar; yalnızca mevcut olan aynı renk mükerrer sayılır"
     );
 
     const groupedReservationId = "cart_usr_repo_owner_a_grouped_001";
