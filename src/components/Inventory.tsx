@@ -250,7 +250,7 @@ export function Inventory({
 
   useEffect(() => {
     if (!selectedRollProduct) return;
-    const latest = groupFabricProductsByParent(products).find((product) => product.id === selectedRollProduct.id);
+    const latest = groupFabricProductsByParent(products).find((product) => product.id === selectedRollProduct.id || product.groupProductIds?.includes(selectedRollProduct.id));
     if (latest && latest !== selectedRollProduct) setSelectedRollProduct(latest);
   }, [products, selectedRollProduct?.id]);
   const [newRollNumber, setNewRollNumber] = useState("");
