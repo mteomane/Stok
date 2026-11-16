@@ -781,7 +781,10 @@ export function Inventory({
   const handleBulkDeleteSelected = async () => {
     if (selectedProductIds.size === 0) return;
     const count = selectedProductIds.size;
-    if (!confirm(`${count} ürün kaydını silmek istediğinize emin misiniz? Bu işlem geri alınamaz.`)) return;
+    const selectedFamilies = displayProducts.filter((product) =>
+      getSourceProductIds(product).every((id) => selectedProductIds.has(id))
+    ).length;
+    if (!confirm(`${selectedFamilies} ürünün toplam ${count} stok kaydını silmek istediğinize emin misiniz? Bu işlem geri alınamaz.`)) return;
     try {
       for (const product of products.filter((item) => selectedProductIds.has(item.id))) {
         await onDeleteProduct(product.id);
@@ -813,7 +816,7 @@ export function Inventory({
               onClick={handleBulkDeleteSelected}
               className="flex-1 sm:flex-none px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
             >
-              <Trash2 className="w-4 h-4" /> Seçilenleri Sil ({selectedProductIds.size})
+              <Trash2 className="w-4 h-4" /> Seçilenleri Sil ({displayProducts.filter((product) => getSourceProductIds(product).every((id) => selectedProductIds.has(id))).length} ürün)
             </button>
           )}
           {/* Toplu QR & Etiket Yazdır Button */}
