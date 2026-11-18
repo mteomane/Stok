@@ -1420,6 +1420,30 @@ export function Inventory({
                       </div>
                     )}
 
+                    {/* Show existing rolls immediately in expanded product row */}
+                    {p.rolls && p.rolls.length > 0 && (
+                      <div className="rounded-xl border border-indigo-100 bg-white overflow-hidden">
+                        <div className="px-3 py-2 bg-indigo-50/70 border-b border-indigo-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-700">Mevcut Toplar</span>
+                          <span className="text-[10px] text-indigo-600 font-semibold">{p.rolls.length} top · toplam {p.rolls.reduce((sum, roll) => sum + Number(roll.length || 0), 0).toLocaleString("tr-TR")} {p.unit || "m"}</span>
+                        </div>
+                        <div className="divide-y divide-slate-100">
+                          {p.rolls.map((roll) => (
+                            <div key={roll.id} className="px-3 py-2.5 flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-slate-800">{roll.rollNumber || "Top"}</div>
+                                {(roll.colorCode || roll.colorName) && <div className="text-[10px] text-slate-500 mt-0.5">Renk: {roll.colorCode || ""} {roll.colorName || ""}</div>}
+                              </div>
+                              <div className="text-right shrink-0">
+                                <div className="text-xs font-bold text-slate-800">{Number(roll.length || 0).toLocaleString("tr-TR")} {p.unit || "m"}</div>
+                                <div className="text-[10px] text-slate-500">{roll.status === "sold" ? "Satıldı" : roll.status === "reserved" ? "Rezerve" : "Satışta"}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Fabric Rolls Tracking Section (Textile / Rolls enabled only) */}
                     {shouldShowRolls(p, sectorSettings?.activeSector) && (
                       <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 text-xs space-y-2">
